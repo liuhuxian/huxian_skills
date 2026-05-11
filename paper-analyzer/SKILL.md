@@ -292,13 +292,53 @@ echo '{plantuml_code}' | python3 {skill_dir}/scripts/validate_plantuml.py --stdi
 
 ### 批量处理的正确方式
 
-1. **逐个顺序处理**：一篇一篇来，当前论文完成（已写入 md 文件）后再开始下一篇
+1. **主线程顺序处理**：一篇一篇来，当前论文完成（已写入 md 文件）后再开始下一篇。这是默认方式，质量最可靠。
 2. **每篇都要完整阅读**：对每篇论文执行与单文件模式相同的完整流程——提取文本 → 逐页阅读 → 深度理解 → 生成解读
 3. **每篇都要判断 PlantUML**：遵循步骤4的规则，独立判断每篇是否需要架构图
 4. **每篇保持同等篇幅**：解读应包含背景动机、核心方法、关键结果、一句话总结，不能缩水
 5. **报告进度**：每完成一篇报告进度（如 "进度 3/10 ✓"），指明已完成和剩余数量
 6. **处理失败不中断**：如果某个文件损坏或无法读取，记录原因，跳过并继续
 7. **全部完成后总结**：共 X 篇，成功 Y 篇，跳过 Z 篇（已有解析），失败 W 篇
+
+### 使用 Agent 并行处理（数量 > 20 篇时可启用）
+
+当论文数量很大时，可以使用后台 agent 并行加速，但**必须遵守以下约束**，否则 agent 生成的 PlantUML 会因自由发挥而导致 Obsidian 渲染失败：
+
+**Agent prompt 强制要求：**
+
+发给每个 agent 的 prompt 中必须包含以下内容（直接复制）：**
+
+```
+【PlantUML 强制验证流程——不可跳过】
+
+在写入每个 md 文件之前，你必须执行以下验证步骤：
+1. 将完整 md 内容写入临时文件 /tmp/_paper_check.md
+2. 运行验证脚本（skill 目录位于项目根目录的 .claude/skills/paper-analyzer/）：
+   python3 {skill_dir}/scripts/validate_plantuml.py /tmp/_paper_check.md
+3. 如果脚本输出 "RESULT: All PlantUML blocks validated successfully"，才能写入最终路径
+4. 如果验证失败，修正 PlantUML 后重新验证，直到通过为止
+
+验证脚本会：
+- 用本地 plantuml.jar 实际渲染，检测语法错误
+- 检查已知的 Obsidian 不兼容模式（!theme、rectangle嵌套、card [...]内容块语法等）
+- 两步全部通过才算成功
+
+PlantUML 语法强制约束：
+- 只用 card + package，绝对禁止用 rectangle
+- 绝对禁止用 card "..." as ID [...] 内容块语法，多行文字用 \n 在引号内换行
+- 绝对禁止用 (text) as alias（那是 usecase 语法，与 card 不兼容）
+- 绝对禁止写 note right of XXX 而 XXX 不存在
+- 所有 card/package 定义必须放在箭头连接之前
+- 严格按照 skill 中的已验证模板格式
+```
+
+**收到 agent 结果后的复验流程（必须执行）：**
+
+agent 完成任务后，对 agent 生成的每个 md 文件：
+
+1. **运行验证脚本**：`python3 .claude/skills/paper-analyzer/scripts/validate_plantuml.py <md文件路径>`
+2. **如果验证失败**：不要把这个有问题的文件留给用户，立即修复 PlantUML 并重新验证
+3. **验证全部通过后才能报告"完成"**
 
 ### 数量预估与沟通
 
