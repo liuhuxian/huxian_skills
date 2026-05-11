@@ -164,9 +164,15 @@ description: 分析学术论文PDF，用通俗易懂的中文生成论文解读M
 
 5. **推理用虚线、训练用实线**：区分主数据流（实线箭头 `-->`）和辅助/推理路径（虚线箭头 `.>`），方便阅读理解。
 
-6. **note 放在模块右侧或下方**：用 `note right of` 或 `note bottom of` 补充细节，不要挤在箭头标签上。
+6. **note 优先放模块下方**：`note right of` 的注释容易被画布右边界裁剪导致文字不全，**优先用 `note bottom of`**。除非右侧有充足空间且注释很短（2 行以内）。
 
 7. **所有 `card`/`package` 定义必须放在箭头连接之前**：PlantUML 中，如果别名先在箭头中出现（如 `A --> loss_node`），PlantUML 会自动创建一个默认组件；之后再写 `card "..." as loss_node` 就会报"重复定义"错误。因此生成 PlantUML 时，**先放所有 `card`/`package` 定义块，再放所有箭头连接和注释**。
+
+8. **禁止 `skinparam defaultTextAlignment center`**：居中 + 多行文本在部分渲染器中宽度计算不准，导致文字被水平裁剪。删除此行即可（默认左对齐不会出问题）。
+
+9. **禁止在 card 文本中使用非 ASCII 字符**：`ε`、`×`、`→` 等 Unicode 符号在 PlantUML 默认字体（Helvetica）中可能不存在，渲染成空白或方框。用纯 ASCII 替代（`eps`、`x`、`->`）。
+
+10. **添加 `skinparam wrapWidth`**：给所有 card 设置统一的最大宽度（推荐 200-300），防止单行文本过长导致布局错乱或溢出。
 
 **禁止使用的语法（会导致 Obsidian 渲染失败）：**
 
@@ -177,6 +183,9 @@ description: 分析学术论文PDF，用通俗易懂的中文生成论文解读M
 | `card "..." as ID [...multi-line...]` | card 的 `[...]` 内容块语法在 kroki 中不渲染 | 用 `card "第一行\n第二行\n第三行" as ID` |
 | `**bold text**` | PlantUML 不支持 Markdown 加粗 | 用 `<b>bold text</b>` |
 | `rectangle { rectangle { ... } }` | 嵌套 rectangle 文字不渲染 | 用 `package { card ... }` |
+| `ε` `×` `→` 等 Unicode 符号 | PlantUML 默认字体缺这些字形，渲染成空白 | `eps` `x` `->` |
+| `skinparam defaultTextAlignment center` | 居中+多行文本宽度计算不准，文字被裁剪 | 删除此行 |
+| `note right of`（注释长时） | 右侧注释易被画布边界裁剪 | 用 `note bottom of` |
 
 **card 元素正确用法（严格遵守）：**
 
@@ -199,7 +208,7 @@ card "V" as VAE [
 @startuml
 skinparam backgroundColor #FEFEFE
 skinparam defaultFontSize 13
-skinparam defaultTextAlignment center
+skinparam wrapWidth 250
 
 title 模型架构简图
 
@@ -211,14 +220,14 @@ package "分组名称" #E3F2FD {
 }
 
 card "核心处理\n具体说明" as core #FFCCBC
-card "输出\n具体说明" as output #BBDEFB
+card "输出\n具体说明" as result_out #BBDEFB
 
 input --> core : 短标签
 sub_a --> core
 sub_b --> core
-core --> output
+core --> result_out
 
-note right of core
+note bottom of core
   <b>补充说明</b>
   • 关键参数
   • 重要细节
