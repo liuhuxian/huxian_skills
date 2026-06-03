@@ -158,6 +158,7 @@ multi_select() {
     old_stty=$(stty -g < "$tty" 2>/dev/null) || old_stty=""
 
     cleanup() {
+        printf "\033[?1049l" > "$tty"
         stty "$old_stty" < "$tty" 2>/dev/null || stty echo icanon < "$tty" 2>/dev/null || true
         printf "\033[?25h" > "$tty"
         printf "\033[0m" > "$tty"
@@ -167,9 +168,10 @@ multi_select() {
 
     stty -echo -icanon min 0 time 0 < "$tty" 2>/dev/null || true
     printf "\033[?25l" > "$tty"
+    printf "\033[?1049h\033[H\033[J" > "$tty"
 
     while true; do
-        printf "\033[2J\033[H" > "$tty"
+        printf "\033[H\033[J" > "$tty"
         printf "%s\n" "$prompt" > "$tty"
         printf "\n" > "$tty"
         for ((i = 0; i < num; i++)); do
@@ -318,7 +320,7 @@ cmd_install_interactive() {
             skill_options+=("$label")
         done
 
-        mapfile -t skill_indices < <(multi_select "Select skills for [${cli}]:" "${skill_options[@]}" | grep -E '^[0-9]+$')
+        mapfile -t skill_indices < <(multi_select "Select skills for [${cli}] (see README.md for skill details):" "${skill_options[@]}" | grep -E '^[0-9]+$')
         if [[ ${#skill_indices[@]} -eq 0 ]]; then
             echo -e "  ${GRAY}No skills selected for ${cli}, skipped${NC}"
             continue
