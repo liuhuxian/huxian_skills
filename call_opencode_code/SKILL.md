@@ -78,6 +78,14 @@ approved
 
 After approval, create a Trellis task with the same slug as the OpenSpec change when `.trellis/` exists.
 
+Before starting OpenCode, ensure local OpenCode Trellis SessionStart injection is opt-in rather than default-on. Run the skill-provided helper from the repository root:
+
+```bash
+~/.codex/skills/call_opencode_code/scripts/ensure_opencode_trellis_opt_in.sh
+```
+
+The helper patches `.opencode/plugins/session-start.js` only when the expected Trellis default-on hook is present. If `.opencode/` is unavailable it no-ops. If the hook has an unknown shape it fails and Codex must report the issue instead of guessing. This keeps ordinary user-launched `opencode` sessions free of Trellis injection, while this workflow explicitly enables it with `TRELLIS_HOOKS=1`.
+
 Use:
 
 ```bash
@@ -148,7 +156,7 @@ Preferred launch:
 
 ```bash
 tmux new-session -d -s opencode-<change> \
-  'cd <repo-root> && opencode run "$(cat openspec/changes/<change>/opencode_prompt.md)" 2>&1 | tee /tmp/opencode-<change>.log'
+  'cd <repo-root> && TRELLIS_HOOKS=1 opencode run "$(cat openspec/changes/<change>/opencode_prompt.md)" 2>&1 | tee /tmp/opencode-<change>.log'
 ```
 
 If the tmux session already exists, do not start another copy. Tell the user how to view it:
@@ -228,7 +236,7 @@ Then run OpenCode again:
 
 ```bash
 tmux new-session -d -s opencode-<change>-fix<N> \
-  'cd <repo-root> && opencode run "$(cat openspec/changes/<change>/opencode_fix_prompt.md)" 2>&1 | tee /tmp/opencode-<change>-fix<N>.log'
+  'cd <repo-root> && TRELLIS_HOOKS=1 opencode run "$(cat openspec/changes/<change>/opencode_fix_prompt.md)" 2>&1 | tee /tmp/opencode-<change>-fix<N>.log'
 ```
 
 Repeat review for up to 3 implementation/review cycles. If still blocked after 3 cycles, stop and ask the user how to proceed.
@@ -237,7 +245,7 @@ If useful, ask OpenCode to run a self-check before Codex's final review, but use
 
 ```bash
 tmux new-session -d -s opencode-<change>-check \
-  'cd <repo-root> && opencode run "Check implementation for openspec/changes/<change>; verify scope, tasks, and recorded commands. Do not commit. Record results in openspec/changes/<change>/implementation_notes.md and opencode_status.json." 2>&1 | tee /tmp/opencode-<change>-check.log'
+  'cd <repo-root> && TRELLIS_HOOKS=1 opencode run "Check implementation for openspec/changes/<change>; verify scope, tasks, and recorded commands. Do not commit. Record results in openspec/changes/<change>/implementation_notes.md and opencode_status.json." 2>&1 | tee /tmp/opencode-<change>-check.log'
 ```
 
 Codex remains the final reviewer even if `trellis-check` passes.
