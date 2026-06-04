@@ -59,15 +59,15 @@ cd huxian_skills
 
 ```
 huxian_skills/ (git repo — 唯一源)
-├── call_opencode_code/SKILL.md    ← 实际文件
+├── call_agent_code/SKILL.md    ← 实际文件
 ├── paper-analyzer/SKILL.md        ← 实际文件
 └── ...
 
 ~/.codex/skills/
-  call_opencode_code → huxian_skills/call_opencode_code   ← symlink
+  call_agent_code → huxian_skills/call_agent_code   ← symlink
 
 ~/.config/opencode/skills/
-  call_opencode_code → huxian_skills/call_opencode_code   ← symlink
+  call_agent_code → huxian_skills/call_agent_code   ← symlink
 
 ~/.claude/skills/
   paper-analyzer     → huxian_skills/paper-analyzer       ← symlink
@@ -83,7 +83,7 @@ CLI 的 skills 目录中创建 symlink 指向本仓库实际文件：
 
 > 交互安装时若不确定 skill 用途，请回到此处查阅后再勾选。
 
-### call_opencode_code
+### call_agent_code
 
 **用途**：OpenSpec + Trellis + OpenCode 协作开发工作流。
 
@@ -94,7 +94,7 @@ Codex 编排、OpenCode 实现、Trellis 追踪的五阶段开发流程：
 | 1. Draft Change | Codex 编写 OpenSpec artifacts（proposal / design / specs / tasks） |
 | 2. Await Approval | 暂停等待用户确认 proposal |
 | 3. Auto Implement | Codex 在 tmux 中启动 OpenCode 执行实现和验证 |
-| 4. Codex Review | 轮询 `opencode_status.json`，审查 diff / notes / verification |
+| 4. Codex Review | 轮询 `agent_status.json`，审查 diff / notes / verification |
 | 5. Prepare Commit | Codex 准备 commit，用户最终确认 |
 
 **适用场景**：中大型变更需 formal spec + review、多 agent 协作、需 git-tracked 文档的项目。

@@ -59,15 +59,15 @@ No config files needed — the script auto-discovers skills by scanning the repo
 
 ```
 huxian_skills/ (git repo — single source of truth)
-├── call_opencode_code/SKILL.md    ← actual file
+├── call_agent_code/SKILL.md    ← actual file
 ├── paper-analyzer/SKILL.md        ← actual file
 └── ...
 
 ~/.codex/skills/
-  call_opencode_code → huxian_skills/call_opencode_code   ← symlink
+  call_agent_code → huxian_skills/call_agent_code   ← symlink
 
 ~/.config/opencode/skills/
-  call_opencode_code → huxian_skills/call_opencode_code   ← symlink
+  call_agent_code → huxian_skills/call_agent_code   ← symlink
 
 ~/.claude/skills/
   paper-analyzer     → huxian_skills/paper-analyzer       ← symlink
@@ -83,7 +83,7 @@ Symlinks in each CLI's skills directory point to real files in this repo:
 
 > When choosing skills interactively, refer back here if you're unsure what each does.
 
-### call_opencode_code
+### call_agent_code
 
 **Purpose**: OpenSpec + Trellis + OpenCode collaborative development workflow.
 
@@ -94,7 +94,7 @@ Codex orchestrates, OpenCode implements, Trellis tracks — a five-stage pipelin
 | 1. Draft Change | Codex writes OpenSpec artifacts (proposal / design / specs / tasks) |
 | 2. Await Approval | Pause for user to confirm the proposal |
 | 3. Auto Implement | Codex launches OpenCode in tmux for implementation and verification |
-| 4. Codex Review | Poll `opencode_status.json`, review diffs / notes / verification |
+| 4. Codex Review | Poll `agent_status.json`, review diffs / notes / verification |
 | 5. Prepare Commit | Codex stages the commit, user gives final approval |
 
 **Use when**: medium-to-large changes need formal specs and review, multi-agent collaboration, or git-tracked requirement docs.
