@@ -44,11 +44,12 @@ After approval:
 
 1. If `.trellis/` exists, create/start a Trellis task with the same slug.
 2. Generate `agent_prompt.md`.
-3. Initialize `agent_status.json`.
-4. Start the selected adapter in detached `tmux`.
-5. Tell the user the tmux attach command and log path.
+3. Run the selected adapter preflight for OpenSpec, Trellis, and agent platform initialization; record the result in `implementation_notes.md`.
+4. Initialize `agent_status.json`.
+5. Start the selected adapter in detached `tmux`.
+6. Tell the user the tmux attach command and log path.
 
-If Trellis is unavailable, continue with OpenSpec + selected agent and record the fallback in `implementation_notes.md`.
+If OpenSpec is unavailable, stop before starting any external agent and show the OpenSpec initialization commands from `shared/initialization.md`. If Trellis is unavailable, continue with OpenSpec + selected agent only after showing the Trellis initialization guidance and recording the fallback in `implementation_notes.md`.
 
 ## State 4: Review Loop
 

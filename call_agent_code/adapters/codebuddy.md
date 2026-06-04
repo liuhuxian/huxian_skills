@@ -2,11 +2,17 @@
 
 Use for `$call_agent_code codebuddy`.
 
-## Status
+## Preflight
 
-This adapter defines the expected shape but may need the exact local CodeBuddy CLI command confirmed from the user's installation.
+Before starting CodeBuddy, run from the repository root:
 
-If `codebuddy --help` is available locally, inspect it before launch. If the launch command is unclear, ask the user for the exact non-interactive command instead of inventing one.
+```bash
+/users/huxian/.codex/skills/call_agent_code/scripts/check_agent_trellis_setup.sh codebuddy .
+```
+
+Record the output in `implementation_notes.md`. If `openspec_ready=no`, stop before launch and show the OpenSpec initialization commands from `shared/initialization.md`. Do not assume CodeBuddy has Trellis hooks, agents, settings, or context injection unless this preflight reports them. If `trellis_platform_init=incomplete`, show the CodeBuddy Trellis initialization guidance from `shared/initialization.md`. CodeBuddy may still run in prompt-only OpenSpec mode: all required context must be included in `agent_prompt.md`, and Trellis is used only through explicit `.trellis/scripts/task.py` commands when available.
+
+`codebuddy --help` confirms non-interactive mode is `codebuddy -p` or `codebuddy --print`.
 
 ## Files
 
@@ -24,7 +30,7 @@ Preferred shape once command is confirmed:
 
 ```bash
 tmux new-session -d -s codebuddy-<change> \
-  'cd <repo-root> && <codebuddy non-interactive command using agent_prompt.md> 2>&1 | tee /tmp/codebuddy-<change>.log'
+  'cd <repo-root> && codebuddy -p --permission-mode acceptEdits "$(cat openspec/changes/<change>/agent_prompt.md)" 2>&1 | tee /tmp/codebuddy-<change>.log'
 ```
 
 Tell the user:

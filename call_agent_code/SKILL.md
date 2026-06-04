@@ -23,8 +23,9 @@ Read only the files needed for the current state:
 1. `shared/workflow.md`
 2. `shared/openspec.md`
 3. `shared/status_protocol.md`
-4. The selected adapter under `adapters/`
-5. `shared/review_and_commit.md` only after the external agent reports completion
+4. `shared/initialization.md`
+5. The selected adapter under `adapters/`
+6. `shared/review_and_commit.md` only after the external agent reports completion
 
 ## Hard Boundaries
 
