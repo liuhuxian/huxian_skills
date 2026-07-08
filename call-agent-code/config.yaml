@@ -1,0 +1,22 @@
+defaults:
+  worktree: /users/huxian/project/le-wm/.worktree/wk1
+  developer:
+    runner: opencode
+    provider: deepseek
+    model: deepseek-v4-pro
+    session_id: change-name
+  code_reviewer:
+    runner: opencode
+    provider: volcengine-plan
+    model: glm-5.2
+  task_verifier:
+    runner: opencode
+    provider: volcengine-plan
+    model: glm-5.2
+  codex_review:
+    enabled: true
+    command: codex --no-alt-screen
+  background: true
+  auto_commit: false
+  max_review_rounds: 10
+  status_poll_seconds: 20
