@@ -72,6 +72,11 @@ max_rounds = s.get('max_review_rounds')
 updated_at = s.get('updated_at')
 blocking = s.get('blocking_issue')
 
+def fmt_time(value):
+    if not value:
+        return value
+    return str(value).replace('T', ' ')[:19]
+
 def role_label(role):
     if not isinstance(role, dict):
         return str(role)
@@ -116,7 +121,7 @@ phase_text = {
 
 print(f"round {round_no}/{max_rounds} | {phase} | {state}")
 print(f"  progress: {phase_text}")
-print(f"  updated_at: {updated_at}")
+print(f"  updated_at: {fmt_time(updated_at)}")
 if blocking:
     print(f"  blocking_issue: {blocking}")
 print("")

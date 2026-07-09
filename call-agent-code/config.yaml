@@ -15,7 +15,7 @@ defaults:
     model: glm-5.2
   codex_review:
     enabled: true
-    command: codex --no-alt-screen
+    command: codex exec -s read-only
   background: true
   auto_commit: false
   max_review_rounds: 10

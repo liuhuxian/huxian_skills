@@ -80,3 +80,26 @@ stopped
 ```
 
 Validation rule: missing evidence is failure. Do not infer test success from prose.
+
+Review verdict files are round-specific. For each review stage the pipeline generates an intermediate task file such as `code_review_task_round_5.md` plus a short prompt file such as `code_reviewer_prompt_round_5.md`. The reviewer/verifier must read the task file and write the exact corresponding output file such as `code_review_round_5.md` themselves. The first non-empty verdict line must be one of:
+
+```text
+- **Verdict:** PASS
+- **Verdict:** NEEDS_CHANGES
+```
+
+A missing file, empty file, tool error, truncated output, or missing explicit verdict is a hard failure for that stage.
+
+The task/prompt files are temporary protocol files. They are kept on failure, interruption, or blocked states for debugging. Once the pipeline reaches `ready_for_commit`, it deletes:
+
+```text
+code_review_task_round_*.md
+task_verification_task_round_*.md
+codex_review_task_round_*.md
+code_reviewer_prompt_round_*.md
+task_verifier_prompt_round_*.md
+codex_review_prompt_round_*.md
+.opencode_runtime/
+```
+
+Formal evidence files such as `code_review_round_*.md`, `task_verification_round_*.md`, `codex_review_round_*.md`, `verification.md`, `handover.md`, `completion_gate.json`, `status.json`, `progress.log`, and `final_status.json` are retained.

@@ -6,7 +6,9 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -21,7 +23,7 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
         "developer": {"runner": "opencode", "provider": "volcengine-plan", "model": "glm-5.2", "session_id": "change-name"},
         "code_reviewer": {"runner": "opencode", "provider": "volcengine-plan", "model": "minimax-m3"},
         "task_verifier": {"runner": "opencode", "provider": "volcengine-plan", "model": "glm-5.2"},
-        "codex_review": {"enabled": True, "command": "codex --no-alt-screen"},
+        "codex_review": {"enabled": True, "command": "codex exec -s read-only"},
         "background": True,
         "auto_commit": False,
         "max_review_rounds": 3,
@@ -131,6 +133,7 @@ def append_log(agent_dir: Path, message: str) -> None:
         f.flush()
 
 
+
 def write_status(agent_dir: Path, request: dict[str, Any], state: str, phase: str, round_no: int, blocking_issue: str | None = None) -> None:
     print(f"[{now_iso()}] status state={state} phase={phase} round={round_no}/{request['max_review_rounds']} blocking={blocking_issue}", flush=True)
     atomic_json(
@@ -164,19 +167,20 @@ Hard requirements:
 - Keep `status.json` updated at phase changes.
 - Write `changed_files.txt`, `verification.md`, `self_review.md`, `handover.md`, and `completion_gate.json`.
 - Do not claim tests passed unless `verification.md` records exact commands, exit codes, and key outputs/artifact paths.
+- Before exiting, verify all required handoff files exist and are non-empty.
 - If blocked, write `status.json` with `state=blocked` and a concrete `blocking_issue`.
 """
     code_review_prompt = f"""You are subagent1, the code reviewer for OpenSpec change `{change}`.
 
-Review the implementation diff in worktree `{request['worktree']}`. Focus on bugs, regressions, missing tests, unsafe behavior, and incompatibilities. Write `openspec/changes/{change}/agent/code_review_round_<round>.md` with PASS or NEEDS_CHANGES and severity-ranked findings.
+Review the implementation diff in worktree `{request['worktree']}`. Focus on bugs, regressions, missing tests, unsafe behavior, and incompatibilities. The runtime pipeline will generate a round-specific prompt with the exact output file path and required Verdict format.
 """
     task_prompt = f"""You are subagent2, the task verifier for OpenSpec change `{change}`.
 
-Verify that the OpenSpec requirements and tasks are actually complete. Check `verification.md`, `changed_files.txt`, `handover.md`, `completion_gate.json`, and the OpenSpec tasks. Do not focus primarily on code style. Write `openspec/changes/{change}/agent/task_verification_round_<round>.md` with PASS or NEEDS_CHANGES and evidence per requirement.
+Verify that the OpenSpec requirements and tasks are actually complete. Check `verification.md`, `changed_files.txt`, `handover.md`, `completion_gate.json`, and the OpenSpec tasks. Do not focus primarily on code style. The runtime pipeline will generate a round-specific prompt with the exact output file path and required Verdict format.
 """
     codex_prompt = f"""You are Codex lead reviewer for OpenSpec change `{change}`.
 
-Read the OpenSpec change, agent handoff artifacts, secondary reviews, completion gate, and git diff in worktree `{request['worktree']}`. Perform the final review. Output PASS only if the change is truly ready for user commit confirmation; otherwise output NEEDS_CHANGES with concrete required fixes.
+Read the OpenSpec change, agent handoff artifacts, secondary reviews, completion gate, and git diff in worktree `{request['worktree']}`. Perform the final review. The runtime pipeline will generate a round-specific prompt with the exact required Verdict format.
 """
     files = {
         "agent_prompt.md": agent_prompt,
@@ -188,6 +192,153 @@ Read the OpenSpec change, agent handoff artifacts, secondary reviews, completion
         path = agent_dir / name
         if not path.exists():
             path.write_text(text, encoding="utf-8")
+
+
+def verdict_contract(output_path: Path) -> str:
+    return f"""Output contract:
+- You MUST write exactly this file before exiting: `{output_path}`
+- The first non-empty verdict line in that file MUST be exactly one of:
+  - `- **Verdict:** PASS`
+  - `- **Verdict:** NEEDS_CHANGES`
+- Use PASS only when the scope you are responsible for is fully satisfied.
+- Use NEEDS_CHANGES when any required issue remains.
+- Before exiting, verify the file exists, is non-empty, and contains exactly one verdict meaning.
+"""
+
+
+def prune_runtime_noise(agent_dir: Path) -> None:
+    runtime_dir = agent_dir / ".opencode_runtime"
+    if runtime_dir.exists():
+        shutil.rmtree(runtime_dir)
+        append_log(agent_dir, "cleanup: removed agent/.opencode_runtime before review step")
+
+
+def write_round_task(agent_dir: Path, request: dict[str, Any], role: str, round_no: int) -> Path:
+    change = request["change"]
+    worktree = request["worktree"]
+    if role == "code_reviewer":
+        task_path = agent_dir / f"code_review_task_round_{round_no}.md"
+        output = agent_dir / f"code_review_round_{round_no}.md"
+        body = f"""# Code Review Task - Round {round_no}
+
+You are subagent1, the code reviewer for OpenSpec change `{change}`.
+
+## Required Inputs
+
+- Worktree: `{worktree}`
+- OpenSpec change directory: `openspec/changes/{change}/`
+- Developer handoff directory: `openspec/changes/{change}/agent/`
+- Required output file: `{output}`
+
+## Steps You Must Execute
+
+1. Before doing the review, create or truncate the required output file now.
+2. Immediately write a temporary placeholder first line to that file:
+   `- **Verdict:** NEEDS_CHANGES`
+   Then leave a blank line below it. This placeholder is temporary and must be replaced if your final decision is PASS.
+3. Read `proposal.md`, `design.md` if present, `tasks.md`, and all spec delta files under `specs/`.
+4. Read `changed_files.txt`, `verification.md`, `self_review.md`, `handover.md`, and `completion_gate.json`.
+5. Inspect `git status --porcelain`, `git diff HEAD --stat`, and the relevant `git diff HEAD` content.
+6. Do not recursively scan the whole change directory. Do not inspect `agent/.opencode_runtime/`, `node_modules/`, `.git/`, or temporary protocol files unless the task explicitly names them. Focus on the named OpenSpec files, handoff artifacts, and `git diff`.
+7. Review for bugs, regressions, unsafe behavior, missing tests, architecture/config/checkpoint/resume/logging incompatibilities, and unstated scope changes.
+8. Decide `PASS` only if the implemented code and verification evidence satisfy the approved OpenSpec.
+9. Overwrite the output file with the final verdict line and the full review body. Do not merely describe the review in chat.
+10. Before exiting, run a final self-check by reading the file back and confirming:
+   the file exists, is non-empty, and its first non-empty verdict line is final rather than placeholder text left by mistake.
+
+{verdict_contract(output)}
+
+## Output Body Requirements
+
+- Put severity-ranked findings first.
+- If PASS, include the concrete evidence you checked and residual risks.
+- If NEEDS_CHANGES, list concrete required fixes that the developer can act on.
+"""
+    elif role == "task_verifier":
+        task_path = agent_dir / f"task_verification_task_round_{round_no}.md"
+        output = agent_dir / f"task_verification_round_{round_no}.md"
+        body = f"""# Task Verification Task - Round {round_no}
+
+You are subagent2, the task verifier for OpenSpec change `{change}`.
+
+## Required Inputs
+
+- Worktree: `{worktree}`
+- OpenSpec change directory: `openspec/changes/{change}/`
+- Developer handoff directory: `openspec/changes/{change}/agent/`
+- Required output file: `{output}`
+
+## Steps You Must Execute
+
+1. Before doing the verification, create or truncate the required output file now.
+2. Immediately write a temporary placeholder first line to that file:
+   `- **Verdict:** NEEDS_CHANGES`
+   Then leave a blank line below it. This placeholder is temporary and must be replaced if your final decision is PASS.
+3. Read `proposal.md`, `design.md` if present, `tasks.md`, and all spec delta files under `specs/`.
+4. Read `changed_files.txt`, `verification.md`, `self_review.md`, `handover.md`, and `completion_gate.json`.
+5. Do not recursively scan the whole change directory. Do not inspect `agent/.opencode_runtime/`, `node_modules/`, `.git/`, or temporary protocol files unless the task explicitly names them. Focus on the named OpenSpec files, handoff artifacts, and `git diff`.
+6. Check whether every task/spec requirement is actually satisfied by files, code, and recorded verification evidence.
+7. Do not mark PASS from prose claims alone. Require exact commands, exit codes, and relevant outputs/artifact paths in `verification.md`.
+8. Confirm generated review files and completion gate fields are consistent with the current round.
+9. Overwrite the output file with the final verdict line and the full verification body. Do not merely describe the verification in chat.
+10. Before exiting, run a final self-check by reading the file back and confirming:
+   the file exists, is non-empty, and its first non-empty verdict line is final rather than placeholder text left by mistake.
+
+{verdict_contract(output)}
+
+## Output Body Requirements
+
+- Provide evidence per requirement/task.
+- If PASS, explain what evidence proves completion.
+- If NEEDS_CHANGES, list missing or insufficient evidence and concrete fixes.
+"""
+    elif role == "codex_review":
+        task_path = agent_dir / f"codex_review_task_round_{round_no}.md"
+        output = agent_dir / f"codex_review_round_{round_no}.md"
+        body = f"""# Codex Lead Review Task - Round {round_no}
+
+You are Codex lead reviewer for OpenSpec change `{change}`.
+
+## Required Inputs
+
+- Worktree: `{worktree}`
+- OpenSpec change directory: `openspec/changes/{change}/`
+- Developer handoff directory: `openspec/changes/{change}/agent/`
+- Required output file: `{output}`
+
+## Steps You Must Execute
+
+1. Read the OpenSpec change, developer handoff artifacts, secondary reviews, completion gate, and git diff.
+2. Do not recursively scan the whole change directory. Do not inspect `agent/.opencode_runtime/`, `node_modules/`, `.git/`, or temporary protocol files unless the task explicitly names them. Focus on the named OpenSpec files, handoff artifacts, and `git diff`.
+3. Check architecture-level compatibility, code correctness, verification adequacy, and whether the change is ready for user commit confirmation.
+4. Write the required output file yourself. Do not merely describe the review in stdout.
+5. After writing, verify the output file exists, is non-empty, and starts with a valid verdict line.
+
+{verdict_contract(output)}
+
+## Output Body Requirements
+
+- If NEEDS_CHANGES, list concrete required fixes.
+- If PASS, include the evidence basis and residual risks.
+"""
+    else:
+        raise ValueError(f"unsupported task role: {role}")
+    task_path.write_text(body, encoding="utf-8")
+    append_log(agent_dir, f"generated task: {task_path.name}; expected output: {output.name}")
+    return task_path
+
+
+def write_round_prompt(agent_dir: Path, request: dict[str, Any], role: str, round_no: int) -> Path:
+    task_path = write_round_task(agent_dir, request, role, round_no)
+    prompt_path = agent_dir / f"{role}_prompt_round_{round_no}.md"
+    prompt = f"""Read `{task_path}` and follow it exactly.
+
+You MUST execute every required step in that task file.
+You MUST write the required output file named in that task file before exiting.
+Do not finish with only a chat summary.
+"""
+    prompt_path.write_text(prompt, encoding="utf-8")
+    return prompt_path
 
 
 def build_runner_cmd(role: dict[str, str], prompt_file: Path, request: dict[str, Any], session_id: str | None, *, resume_existing_session: bool = False) -> list[str]:
@@ -206,13 +357,16 @@ def build_runner_cmd(role: dict[str, str], prompt_file: Path, request: dict[str,
     raise SystemExit(f"unsupported runner: {runner}")
 
 
-def run_cmd(cmd: list[str], cwd: Path, log_path: Path) -> int:
+def run_cmd(cmd: list[str], cwd: Path, log_path: Path, env_extra: dict[str, str] | None = None) -> int:
     cmd_line = f"$ {' '.join(shlex.quote(c) for c in cmd)}"
     print(cmd_line, flush=True)
     with log_path.open("a", encoding="utf-8") as log:
         log.write("\n" + cmd_line + "\n")
         log.flush()
-        proc = subprocess.Popen(cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        env = os.environ.copy()
+        if env_extra:
+            env.update(env_extra)
+        proc = subprocess.Popen(cmd, cwd=str(cwd), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         assert proc.stdout is not None
         for line in proc.stdout:
             print(line, end="", flush=True)
@@ -226,11 +380,130 @@ def run_cmd(cmd: list[str], cwd: Path, log_path: Path) -> int:
         return int(proc.returncode)
 
 
-def file_contains_pass(path: Path) -> bool:
+VERDICT_RE = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?Verdict\s*:\s*(?:\*\*)?\s*(PASS|NEEDS_CHANGES)\b", re.IGNORECASE | re.MULTILINE)
+TOOL_ERROR_MARKERS = (
+    "Invalid Tool",
+    "JSON Parse error",
+    "Error: stdin is not a terminal",
+    "Traceback (most recent call last)",
+)
+MIN_REVIEW_BODY_CHARS = 40
+
+
+def parse_verdict_file(path: Path) -> tuple[str, str]:
+    """Return (PASS|NEEDS_CHANGES|INVALID, reason)."""
     if not path.exists():
-        return False
-    text = path.read_text(encoding="utf-8", errors="replace")[:4000].upper()
-    return "PASS" in text and "NEEDS_CHANGES" not in text and "CRITICAL" not in text and "MAJOR" not in text
+        return "INVALID", f"missing file: {path.name}"
+    if path.stat().st_size == 0:
+        return "INVALID", f"empty file: {path.name}"
+    text = path.read_text(encoding="utf-8", errors="replace")
+    leading = text.lstrip()[:1000]
+    for marker in TOOL_ERROR_MARKERS:
+        if leading.startswith(marker):
+            return "INVALID", f"tool/error output in {path.name}: {marker}"
+    matches = [m.group(1).upper() for m in VERDICT_RE.finditer(text)]
+    if not matches:
+        return "INVALID", f"missing explicit Verdict in {path.name}"
+    unique = set(matches)
+    if len(unique) > 1:
+        return "INVALID", f"conflicting Verdict lines in {path.name}: {sorted(unique)}"
+    first = VERDICT_RE.search(text)
+    assert first is not None
+    body = text[first.end():].strip()
+    if not body:
+        return "INVALID", f"missing review body in {path.name}"
+    if len(body) < MIN_REVIEW_BODY_CHARS:
+        return "INVALID", f"review body too short in {path.name}"
+    return matches[-1], f"verdict={matches[-1]} in {path.name}"
+
+
+def verdict_is_pass(path: Path) -> bool:
+    verdict, _reason = parse_verdict_file(path)
+    return verdict == "PASS"
+
+
+def should_retry_artifact(reason: str) -> bool:
+    retry_markers = (
+        "missing file:",
+        "empty file:",
+        "missing review body",
+        "review body too short",
+    )
+    return any(marker in reason for marker in retry_markers)
+
+
+def validate_completed_review_round(agent_dir: Path, round_no: int) -> tuple[bool, str]:
+    """A completed review round must have valid verdict files for all review roles."""
+    if round_no < 1:
+        return True, "no previous round"
+    required = [
+        agent_dir / f"code_review_round_{round_no}.md",
+        agent_dir / f"task_verification_round_{round_no}.md",
+        agent_dir / f"codex_review_round_{round_no}.md",
+    ]
+    for path in required:
+        verdict, reason = parse_verdict_file(path)
+        if verdict == "INVALID":
+            return False, f"previous round {round_no} invalid: {reason}"
+    return True, f"previous round {round_no} has valid review verdicts"
+
+
+DEVELOPER_ARTIFACTS = (
+    "changed_files.txt",
+    "verification.md",
+    "self_review.md",
+    "handover.md",
+    "completion_gate.json",
+)
+
+
+def validate_developer_artifacts(agent_dir: Path) -> tuple[bool, str]:
+    for name in DEVELOPER_ARTIFACTS:
+        path = agent_dir / name
+        if not path.exists():
+            return False, f"missing developer artifact: {name}"
+        if path.stat().st_size == 0:
+            return False, f"empty developer artifact: {name}"
+    try:
+        gate = json.loads((agent_dir / "completion_gate.json").read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, f"invalid completion_gate.json: {exc}"
+    for key in ("tasks_completed", "changed_files_listed", "verification_recorded", "verification_exit_codes_recorded", "handover_written"):
+        if gate.get(key) is not True:
+            return False, f"completion_gate.{key} is not true"
+    return True, "developer artifacts valid"
+
+
+def earliest_resume_point_for_round(agent_dir: Path, round_no: int) -> tuple[int, str, str]:
+    """Return the earliest stage that must run for this round."""
+    ok, reason = validate_developer_artifacts(agent_dir)
+    if not ok:
+        return round_no, "developer", reason
+
+    code_review = agent_dir / f"code_review_round_{round_no}.md"
+    code_verdict, code_reason = parse_verdict_file(code_review)
+    if code_verdict == "INVALID":
+        return round_no, "code_reviewer", code_reason
+    if code_verdict == "NEEDS_CHANGES":
+        return round_no + 1, "developer", code_reason
+
+    task_file = agent_dir / f"task_verification_round_{round_no}.md"
+    task_verdict, task_reason = parse_verdict_file(task_file)
+    if task_verdict == "INVALID":
+        return round_no, "task_verifier", task_reason
+    if task_verdict == "NEEDS_CHANGES":
+        return round_no + 1, "developer", task_reason
+
+    codex_file = agent_dir / f"codex_review_round_{round_no}.md"
+    codex_verdict, codex_reason = parse_verdict_file(codex_file)
+    if codex_verdict == "INVALID":
+        if codex_file.exists():
+            codex_file.unlink()
+        return round_no, "codex_lead_review", codex_reason
+    if codex_verdict == "NEEDS_CHANGES":
+        return round_no + 1, "developer", codex_reason
+
+    return round_no, "done", "all review verdicts PASS"
 
 
 def ensure_initial_gate(agent_dir: Path) -> None:
@@ -300,7 +573,7 @@ def create_request(args: argparse.Namespace) -> tuple[Path, dict[str, Any]]:
         "task_verifier": parse_role_spec(args.task_verifier, defaults["task_verifier"]),
         "codex_review": {
             "enabled": not args.no_codex_review and bool(deep_get(defaults, "codex_review", "enabled", default=True)),
-            "command": deep_get(defaults, "codex_review", "command", default="codex --no-alt-screen"),
+            "command": deep_get(defaults, "codex_review", "command", default="codex exec -s read-only"),
         },
     }
     agent_dir.mkdir(parents=True, exist_ok=True)
@@ -331,16 +604,31 @@ def next_resume_step(agent_dir: Path, request: dict[str, Any]) -> tuple[int, str
     if state == "ready_for_commit" or phase == "all_reviews_passed":
         return round_no, "done"
     if state == "blocked" and phase == "max_review_rounds_exceeded":
+        recovered_round, recovered_step, _reason = earliest_resume_point_for_round(agent_dir, max(1, round_no))
+        if recovered_step != "done":
+            return recovered_round, recovered_step
         return round_no, "done"
-    if phase in {"developer_agent", "developer_agent_failed", "protocol_files_ready", "review_feedback_pending_fix"}:
+
+    if phase == "previous_review_round_invalid" and round_no > 1:
+        recovered_round, recovered_step, _reason = earliest_resume_point_for_round(agent_dir, round_no - 1)
+        return recovered_round, recovered_step
+
+    if phase in {"protocol_files_ready", "developer_agent", "developer_agent_failed", "developer_invalid_output"}:
         return max(1, round_no), "developer"
-    if phase in {"code_reviewer", "code_reviewer_failed"}:
+    if phase in {"code_reviewer", "code_reviewer_failed", "code_reviewer_invalid_output"}:
         return max(1, round_no), "code_reviewer"
-    if phase in {"task_verifier", "task_verifier_failed"}:
+    if phase in {"task_verifier", "task_verifier_failed", "task_verifier_invalid_output"}:
         return max(1, round_no), "task_verifier"
-    if phase == "codex_lead_review":
+    if phase in {"codex_lead_review", "codex_review_invalid_output"}:
         return max(1, round_no), "codex_lead_review"
+    if phase == "review_feedback_pending_fix":
+        recovered_round, recovered_step, _reason = earliest_resume_point_for_round(agent_dir, max(1, round_no))
+        return recovered_round, recovered_step
     return max(1, round_no), "developer"
+
+def runner_env(request: dict[str, Any], role: dict[str, str]) -> dict[str, str] | None:
+    return None
+
 
 
 def run_developer_round(agent_dir: Path, request: dict[str, Any], worktree: Path, log_path: Path, round_no: int) -> int:
@@ -356,53 +644,99 @@ def run_developer_round(agent_dir: Path, request: dict[str, Any], worktree: Path
         ),
         worktree,
         log_path,
+        runner_env(request, request["developer"]),
     )
 
 
 def run_code_review_round(agent_dir: Path, request: dict[str, Any], worktree: Path, log_path: Path, round_no: int) -> int:
+    prune_runtime_noise(agent_dir)
     write_status(agent_dir, request, "code_reviewing", "code_reviewer", round_no)
     return run_cmd(
         build_runner_cmd(
             request["code_reviewer"],
-            agent_dir / "code_reviewer_prompt.md",
+            write_round_prompt(agent_dir, request, "code_reviewer", round_no),
             request,
             request["sessions"]["code_reviewer"],
             resume_existing_session=False,
         ),
         worktree,
         log_path,
+        runner_env(request, request["code_reviewer"]),
+    )
+
+
+def run_code_review_artifact_retry(agent_dir: Path, request: dict[str, Any], worktree: Path, log_path: Path, round_no: int) -> int:
+    output = agent_dir / f"code_review_round_{round_no}.md"
+    prompt_path = agent_dir / f"code_reviewer_artifact_retry_round_{round_no}.md"
+    prompt = f"""You previously completed the analysis but did not create the required review artifact.
+
+Do not re-review the code.
+Do not continue exploring.
+Only create this exact file now: `{output}`
+
+Requirements:
+- The first non-empty line must be exactly one of:
+  - `- **Verdict:** PASS`
+  - `- **Verdict:** NEEDS_CHANGES`
+- The file must be non-empty.
+- If you already know your decision from the previous analysis, write it now.
+- Before exiting, read the file back and confirm it exists.
+"""
+    prompt_path.write_text(prompt, encoding="utf-8")
+    append_log(agent_dir, f"round {round_no}: code reviewer artifact missing; running one retry focused only on writing {output.name}")
+    retry_role = dict(request["code_reviewer"])
+    retry_session = f"{request['sessions']['code_reviewer']}-artifact-retry-r{round_no}"
+    return run_cmd(
+        build_runner_cmd(
+            retry_role,
+            prompt_path,
+            request,
+            retry_session,
+            resume_existing_session=False,
+        ),
+        worktree,
+        log_path,
+        runner_env(request, retry_role),
     )
 
 
 def run_task_verification_round(agent_dir: Path, request: dict[str, Any], worktree: Path, log_path: Path, round_no: int) -> int:
+    prune_runtime_noise(agent_dir)
     write_status(agent_dir, request, "task_verifying", "task_verifier", round_no)
     return run_cmd(
         build_runner_cmd(
             request["task_verifier"],
-            agent_dir / "task_verifier_prompt.md",
+            write_round_prompt(agent_dir, request, "task_verifier", round_no),
             request,
             request["sessions"]["task_verifier"],
             resume_existing_session=False,
         ),
         worktree,
         log_path,
+        runner_env(request, request["task_verifier"]),
     )
 
 
 def run_codex_review_round(agent_dir: Path, request: dict[str, Any], worktree: Path, log_path: Path, round_no: int) -> bool:
     if not request["codex_review"].get("enabled"):
         return True
+    prune_runtime_noise(agent_dir)
     write_status(agent_dir, request, "codex_reviewing", "codex_lead_review", round_no)
     codex_out = agent_dir / f"codex_review_round_{round_no}.md"
-    cmd = shlex.split(request["codex_review"].get("command", "codex --no-alt-screen"))
-    prompt = (agent_dir / "codex_review_prompt.md").read_text(encoding="utf-8")
-    with codex_out.open("w", encoding="utf-8") as out, log_path.open("a", encoding="utf-8") as log:
-        log.write(f"\n$ {' '.join(shlex.quote(c) for c in cmd)} < codex_review_prompt.md\n")
+    cmd = shlex.split(request["codex_review"].get("command", "codex exec -s read-only"))
+    if cmd[:2] == ["codex", "exec"]:
+        cmd = cmd + ["-C", str(worktree), "-o", str(codex_out), "-"]
+    prompt_path = write_round_prompt(agent_dir, request, "codex_review", round_no)
+    prompt = prompt_path.read_text(encoding="utf-8")
+    if codex_out.exists():
+        codex_out.unlink()
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write(f"\n$ {' '.join(shlex.quote(c) for c in cmd)} < {prompt_path.name}\n")
         log.flush()
-        proc = subprocess.run(cmd, cwd=str(worktree), input=prompt, stdout=out, stderr=subprocess.STDOUT, text=True)
+        proc = subprocess.run(cmd, cwd=str(worktree), input=prompt, stdout=log, stderr=subprocess.STDOUT, text=True)
         log.write(f"[codex_exit_code] {proc.returncode}\n")
         log.flush()
-    codex_pass = proc.returncode == 0 and file_contains_pass(codex_out)
+    codex_pass = proc.returncode == 0 and verdict_is_pass(codex_out)
     update_gate(agent_dir, codex_review_passed=codex_pass)
     return codex_pass
 
@@ -421,8 +755,52 @@ def prepare_next_fix_round(agent_dir: Path, request: dict[str, Any], round_no: i
         )
 
 
+def finish_failed_review_round(agent_dir: Path, request: dict[str, Any], round_no: int) -> None:
+    prepare_next_fix_round(agent_dir, request, round_no)
+
+
+def refresh_request_from_config(request_path: Path, request: dict[str, Any]) -> dict[str, Any]:
+    config = read_yaml_like(CONFIG_PATH)
+    defaults = config.get("defaults", BUILTIN_DEFAULTS["defaults"])
+    codex_defaults = defaults.get("codex_review", {})
+    codex = dict(request.get("codex_review", {}))
+    old_command = codex.get("command")
+    codex["command"] = codex_defaults.get("command", "codex exec -s read-only")
+    codex["enabled"] = bool(codex.get("enabled", codex_defaults.get("enabled", True)))
+    request["codex_review"] = codex
+    request["status_poll_seconds"] = int(defaults.get("status_poll_seconds", request.get("status_poll_seconds", 20)))
+    had_runtime_config = "opencode_config_dir" in request
+    request.pop("opencode_config_dir", None)
+    if old_command != codex["command"] or had_runtime_config:
+        atomic_json(request_path, request)
+    return request
+
+
+def cleanup_temporary_protocol_files(agent_dir: Path) -> None:
+    patterns = (
+        "code_review_task_round_*.md",
+        "task_verification_task_round_*.md",
+        "codex_review_task_round_*.md",
+        "code_reviewer_prompt_round_*.md",
+        "code_reviewer_artifact_retry_round_*.md",
+        "task_verifier_prompt_round_*.md",
+        "codex_review_prompt_round_*.md",
+    )
+    removed = 0
+    for pattern in patterns:
+        for path in agent_dir.glob(pattern):
+            path.unlink(missing_ok=True)
+            removed += 1
+    runtime_dir = agent_dir / ".opencode_runtime"
+    if runtime_dir.exists():
+        shutil.rmtree(runtime_dir)
+        removed += 1
+    append_log(agent_dir, f"cleanup: removed {removed} temporary protocol files after ready_for_commit")
+
+
 def run_pipeline(request_path: Path) -> int:
     request = json.loads(request_path.read_text(encoding="utf-8"))
+    request = refresh_request_from_config(request_path, request)
     worktree = Path(request["worktree"])
     agent_dir = Path(request["agent_dir"])
     log_path = agent_dir / "progress.log"
@@ -440,6 +818,11 @@ def run_pipeline(request_path: Path) -> int:
             if code != 0:
                 write_status(agent_dir, request, "failed", "developer_agent_failed", round_no, f"developer exit code {code}")
                 return code
+            ok, reason = validate_developer_artifacts(agent_dir)
+            if not ok:
+                write_status(agent_dir, request, "failed", "developer_invalid_output", round_no, reason)
+                append_log(agent_dir, f"hard gate failed: {reason}")
+                return 3
             step = "code_reviewer"
 
         if step == "code_reviewer":
@@ -449,6 +832,24 @@ def run_pipeline(request_path: Path) -> int:
                 if code != 0:
                     write_status(agent_dir, request, "failed", "code_reviewer_failed", round_no, f"code reviewer exit code {code}")
                     return code
+            code_review_verdict, reason = parse_verdict_file(code_review_file)
+            if code_review_verdict == "INVALID" and should_retry_artifact(reason):
+                code = run_code_review_artifact_retry(agent_dir, request, worktree, log_path, round_no)
+                if code != 0:
+                    write_status(agent_dir, request, "failed", "code_reviewer_failed", round_no, f"code reviewer artifact retry exit code {code}")
+                    return code
+                code_review_verdict, reason = parse_verdict_file(code_review_file)
+            if code_review_verdict == "INVALID":
+                write_status(agent_dir, request, "failed", "code_reviewer_invalid_output", round_no, reason)
+                append_log(agent_dir, f"hard gate failed: {reason}")
+                return 3
+            code_review_pass = code_review_verdict == "PASS"
+            update_gate(agent_dir, code_review_passed=code_review_pass)
+            if code_review_verdict == "NEEDS_CHANGES":
+                finish_failed_review_round(agent_dir, request, round_no)
+                round_no += 1
+                step = "developer"
+                continue
             step = "task_verifier"
 
         if step == "task_verifier":
@@ -458,46 +859,80 @@ def run_pipeline(request_path: Path) -> int:
                 if code != 0:
                     write_status(agent_dir, request, "failed", "task_verifier_failed", round_no, f"task verifier exit code {code}")
                     return code
+            task_verdict, reason = parse_verdict_file(task_file)
+            if task_verdict == "INVALID":
+                write_status(agent_dir, request, "failed", "task_verifier_invalid_output", round_no, reason)
+                append_log(agent_dir, f"hard gate failed: {reason}")
+                return 3
+            task_pass = task_verdict == "PASS"
+            update_gate(agent_dir, task_verification_passed=task_pass)
+            if task_verdict == "NEEDS_CHANGES":
+                finish_failed_review_round(agent_dir, request, round_no)
+                round_no += 1
+                step = "developer"
+                continue
             step = "codex_lead_review"
 
-        code_review_pass = file_contains_pass(agent_dir / f"code_review_round_{round_no}.md")
-        task_pass = file_contains_pass(agent_dir / f"task_verification_round_{round_no}.md")
-        update_gate(agent_dir, code_review_passed=code_review_pass, task_verification_passed=task_pass)
-
-        codex_pass = True
         if step == "codex_lead_review":
             codex_out = agent_dir / f"codex_review_round_{round_no}.md"
             if not codex_out.exists() or codex_out.stat().st_size == 0:
-                codex_pass = run_codex_review_round(agent_dir, request, worktree, log_path, round_no)
-            else:
-                codex_pass = file_contains_pass(codex_out)
-                update_gate(agent_dir, codex_review_passed=codex_pass)
+                run_codex_review_round(agent_dir, request, worktree, log_path, round_no)
+            codex_verdict, reason = parse_verdict_file(codex_out)
+            if codex_verdict == "INVALID":
+                write_status(agent_dir, request, "failed", "codex_review_invalid_output", round_no, reason)
+                append_log(agent_dir, f"hard gate failed: {reason}")
+                return 3
+            codex_pass = codex_verdict == "PASS"
+            update_gate(agent_dir, codex_review_passed=codex_pass)
+            if codex_verdict == "NEEDS_CHANGES":
+                finish_failed_review_round(agent_dir, request, round_no)
+                round_no += 1
+                step = "developer"
+                continue
 
-        if code_review_pass and task_pass and codex_pass:
-            update_gate(agent_dir, no_major_findings=True, ready_for_commit=True)
-            write_status(agent_dir, request, "ready_for_commit", "all_reviews_passed", round_no)
-            atomic_json(agent_dir / "final_status.json", {"state": "ready_for_commit", "updated_at": now_iso(), "round": round_no})
-            append_log(agent_dir, "pipeline completed: ready_for_commit")
-            return 0
-
-        prepare_next_fix_round(agent_dir, request, round_no)
-        round_no += 1
-        step = "developer"
+        update_gate(agent_dir, code_review_passed=True, task_verification_passed=True, codex_review_passed=True, no_major_findings=True, ready_for_commit=True)
+        cleanup_temporary_protocol_files(agent_dir)
+        write_status(agent_dir, request, "ready_for_commit", "all_reviews_passed", round_no)
+        atomic_json(agent_dir / "final_status.json", {"state": "ready_for_commit", "updated_at": now_iso(), "round": round_no})
+        append_log(agent_dir, "pipeline completed: ready_for_commit")
+        return 0
 
     write_status(agent_dir, request, "blocked", "max_review_rounds_exceeded", request["max_review_rounds"], "review loop did not pass")
     append_log(agent_dir, "pipeline blocked: max review rounds exceeded")
     return 2
 
+def tmux_session_exists(session: str) -> bool:
+    return subprocess.run(["tmux", "has-session", "-t", session], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+
+def tmux_window_names(session: str) -> list[str]:
+    proc = subprocess.run(["tmux", "list-windows", "-t", session, "-F", "#W"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    if proc.returncode != 0:
+        return []
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
 
 def start_background(agent_dir: Path) -> int:
     request = agent_dir / "request.json"
     session = f"agent-{agent_dir.parent.name}"
-    cmd = ["tmux", "new-session", "-d", "-s", session, sys.executable, str(Path(__file__).resolve()), "run", str(request)]
-    subprocess.run(cmd, check=True)
+    run_cmd_args = [sys.executable, str(Path(__file__).resolve()), "run", str(request)]
     watch_cmd = f"{shlex.quote(str(SKILL_DIR / 'scripts' / 'watch_agent_status.sh'))} {shlex.quote(str(agent_dir))} 5"
-    subprocess.run(["tmux", "new-window", "-t", session, "-n", "status", "bash", "-lc", watch_cmd], check=False)
-    print(f"started tmux session: {session}")
-    print("tmux windows: 0=pipeline, 1=status")
+
+    if tmux_session_exists(session):
+        windows = tmux_window_names(session)
+        if "pipeline" in windows or any(name.startswith("python") for name in windows):
+            print(f"tmux session already has a pipeline window: {session}")
+        else:
+            subprocess.run(["tmux", "new-window", "-t", session, "-n", "pipeline", *run_cmd_args], check=True)
+            print(f"started pipeline window in existing tmux session: {session}")
+        if "status" not in tmux_window_names(session):
+            subprocess.run(["tmux", "new-window", "-t", session, "-n", "status", "bash", "-lc", watch_cmd], check=False)
+    else:
+        subprocess.run(["tmux", "new-session", "-d", "-s", session, "-n", "pipeline", *run_cmd_args], check=True)
+        subprocess.run(["tmux", "new-window", "-t", session, "-n", "status", "bash", "-lc", watch_cmd], check=False)
+        print(f"started tmux session: {session}")
+
+    print("tmux windows: pipeline/status")
     print(f"status: {agent_dir / 'status.json'}")
     print(f"log:    {agent_dir / 'progress.log'}")
     print(f"watch:  {SKILL_DIR / 'scripts' / 'watch_agent_status.sh'} {agent_dir}")
@@ -508,6 +943,12 @@ def resolve_agent_dir(worktree: Path, change: str | None) -> Path:
     if not change:
         change = detect_change(worktree)
     return worktree / "openspec" / "changes" / change / "agent"
+
+
+def resolve_cli_worktree(value: str | None) -> Path:
+    config = read_yaml_like(CONFIG_PATH)
+    defaults = config.get("defaults", BUILTIN_DEFAULTS["defaults"])
+    return resolve_worktree(value, defaults)
 
 
 def cmd_status(worktree: Path, change: str | None) -> int:
@@ -590,13 +1031,13 @@ def main() -> int:
     if args.command == "run":
         return run_pipeline(Path(args.request_json).resolve())
     if args.command == "status":
-        return cmd_status(Path(args.worktree or os.getcwd()).resolve(), args.change)
+        return cmd_status(resolve_cli_worktree(args.worktree), args.change)
     if args.command == "logs":
-        return cmd_logs(Path(args.worktree or os.getcwd()).resolve(), args.change, args.tail)
+        return cmd_logs(resolve_cli_worktree(args.worktree), args.change, args.tail)
     if args.command == "stop":
-        return cmd_stop(Path(args.worktree or os.getcwd()).resolve(), args.change)
+        return cmd_stop(resolve_cli_worktree(args.worktree), args.change)
     if args.command == "resume":
-        return cmd_resume(Path(args.worktree or os.getcwd()).resolve(), args.change)
+        return cmd_resume(resolve_cli_worktree(args.worktree), args.change)
     if args.command in {"start", "prepare", None}:
         if args.command is None:
             args.command = "start"

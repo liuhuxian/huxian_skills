@@ -49,7 +49,7 @@ defaults:
     model: glm-5.2
   codex_review:
     enabled: true
-    command: codex --no-alt-screen
+    command: codex exec -s read-only
   background: true
   auto_commit: false
   max_review_rounds: 10
@@ -158,7 +158,7 @@ $call-agent-code resume stage1-ddp-safe-sigreg-logging --worktree wk1
 4. developer agent 开发
 5. code reviewer 独立代码审核
 6. task verifier 独立任务验收
-7. Codex CLI 自动主审核
+7. Codex CLI 非交互主审核
 8. 如果失败，流水线进入下一轮修复
 9. 全部通过后进入 ready_for_commit
 10. 用户确认是否提交
@@ -224,96 +224,31 @@ failed/blocked = pipeline 主动写入失败或阻塞原因。
 
 首屏只打印一次 change、角色、session、status/log 路径。后续只打印当前轮次、阶段、状态和简短进度，不打印代码 diff、不 tail `progress.log`。
 
-`resume` 是阶段级恢复，不是简单从头重跑。它读取 `status.json` 和已有产物文件，尽量从中断阶段继续：
+流水线有全链路硬门禁：developer 必须先生成有效的 `changed_files.txt`、`verification.md`、`self_review.md`、`handover.md`、`completion_gate.json`；每个 review 阶段必须生成当前 round 的有效 verdict 文件。上一步缺文件、空文件、工具错误、半截输出、无 verdict，都会把对应阶段标记为 `failed`，不会进入下一步。`NEEDS_CHANGES` 是有效 verdict，但会直接进入下一轮 developer，不会继续跑后续 review 阶段。
+
+## Review Task 文件与硬门禁
+
+每轮 reviewer/verifier/Codex review 都会动态生成两个中间流程文件：
 
 ```text
-protocol_files_ready / developer_agent / developer_agent_failed -> developer
-code_reviewer / code_reviewer_failed                           -> code_reviewer
-task_verifier / task_verifier_failed                           -> task_verifier
-codex_lead_review                                               -> codex review
-review_feedback_pending_fix                                     -> 下一轮 developer
-ready_for_commit / blocked                                      -> 不重复启动
+code_review_task_round_<n>.md
+code_reviewer_prompt_round_<n>.md
+task_verification_task_round_<n>.md
+task_verifier_prompt_round_<n>.md
+codex_review_task_round_<n>.md
+codex_review_prompt_round_<n>.md
 ```
 
-如果某个 review 文件存在但大小为 0，会视为未完成并重跑该阶段。
+`*_task_round_<n>.md` 包含逐步执行清单、必须读取的输入、必须写出的正式产物路径和 verdict 格式。prompt 文件只负责要求外部 agent 读取对应 task 文件并严格执行。
 
-## 任务文件
-
-每个 change 会生成：
+正式产物仍由 reviewer/verifier/Codex 自己写出：
 
 ```text
-openspec/changes/<change>/agent/
-  request.json
-  status.json
-  progress.log
-
-  agent_prompt.md
-  code_reviewer_prompt.md
-  task_verifier_prompt.md
-  codex_review_prompt.md
-
-  changed_files.txt
-  verification.md
-  self_review.md
-  code_review_round_<n>.md
-  task_verification_round_<n>.md
-  codex_review_round_<n>.md
-
-  completion_gate.json
-  handover.md
-  final_status.json
-```
-
-## 完成门禁
-
-不能相信 agent 口头说“完成了”。必须看：
-
-```text
-completion_gate.json
-verification.md
-changed_files.txt
-handover.md
 code_review_round_<n>.md
 task_verification_round_<n>.md
 codex_review_round_<n>.md
 ```
 
-`completion_gate.json` 里关键字段必须为 true：
+pipeline 不代写正式 review artifact，只做日志捕获和硬门禁校验。缺文件、空文件、工具错误、半截输出、无 verdict、verdict 冲突、旧 round 误用都会失败并停在当前阶段，不会进入下一步。
 
-```json
-{
-  "tasks_completed": true,
-  "changed_files_listed": true,
-  "verification_recorded": true,
-  "verification_exit_codes_recorded": true,
-  "code_review_passed": true,
-  "task_verification_passed": true,
-  "codex_review_passed": true,
-  "no_major_findings": true,
-  "handover_written": true,
-  "ready_for_commit": true
-}
-```
-
-缺少验证命令、退出码、输出路径，都不能算完成。
-
-## 禁止事项
-
-```text
-不要让外部 agent commit。
-不要在没有用户确认时 commit。
-不要用 Trellis。
-不要让 Codex 持续轮询 status。
-不要把 developer agent 的口头完成当作完成证据。
-```
-
-## 什么时候用严格模式
-
-训练代码、验证代码、loss、checkpoint、resume、dataset、cache、闭环评估等任务，默认使用完整流程：
-
-```text
-developer + code reviewer + task verifier + Codex lead review
-```
-
-文档、小配置、小脚本可以考虑后续增加轻量模式，但当前默认应以严格流程为主。
-
+进入 `ready_for_commit` 后，pipeline 会删除中间 task/prompt 文件和历史 `.opencode_runtime/`，保留正式证据文件、日志、状态文件和最终 review 文件。失败、中断或 blocked 时会保留这些中间文件用于排查。
