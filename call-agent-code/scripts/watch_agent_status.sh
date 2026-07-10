@@ -199,10 +199,14 @@ PYBRIEF
     last_state_key="$state_key"
     last_heartbeat="$now_epoch"
   elif (( now_epoch - last_heartbeat >= 60 )); then
-    if [[ "$stalled" -eq 1 ]]; then
-      printf "\r\033[2K[%s] stalled | %s | next: resume" "$now_text" "$status_brief"
+    if [[ -t 1 ]]; then
+      if [[ "$stalled" -eq 1 ]]; then
+        printf "\r\033[2K[%s] stalled | %s | next: resume\n" "$now_text" "$status_brief"
+      else
+        printf "\r\033[2K[%s] still running | %s\n" "$now_text" "$status_brief"
+      fi
     else
-      printf "\r\033[2K[%s] still running | %s" "$now_text" "$status_brief"
+      echo "[$now_text] heartbeat | $status_brief"
     fi
     heartbeat_active=1
     last_heartbeat="$now_epoch"

@@ -12,7 +12,6 @@ Required files:
 request.json
 status.json
 progress.log
-agent_prompt.md
 code_reviewer_prompt.md
 task_verifier_prompt.md
 codex_review_prompt.md
@@ -40,7 +39,7 @@ final_status.json
   "developer": {"runner": "opencode", "provider": "volcengine-plan", "model": "glm-5.2"},
   "code_reviewer": {"runner": "opencode", "provider": "volcengine-plan", "model": "minimax-m3"},
   "task_verifier": {"runner": "opencode", "provider": "volcengine-plan", "model": "glm-5.2"},
-  "session_id": "change-name",
+  "sessions": {"developer": "change-name", "code_reviewer": "change-name-code-reviewer", "task_verifier": "change-name-task-verifier"},
   "blocking_issue": null
 }
 ```
@@ -93,10 +92,13 @@ A missing file, empty file, tool error, truncated output, or missing explicit ve
 The task/prompt files are temporary protocol files. They are kept on failure, interruption, or blocked states for debugging. Once the pipeline reaches `ready_for_commit`, it deletes:
 
 ```text
+developer_task_round_*.md
 code_review_task_round_*.md
 task_verification_task_round_*.md
 codex_review_task_round_*.md
+developer_prompt_round_*.md
 code_reviewer_prompt_round_*.md
+code_reviewer_artifact_retry_round_*.md
 task_verifier_prompt_round_*.md
 codex_review_prompt_round_*.md
 .opencode_runtime/

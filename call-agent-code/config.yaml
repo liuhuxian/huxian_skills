@@ -4,15 +4,14 @@ defaults:
     runner: opencode
     provider: deepseek
     model: deepseek-v4-pro
-    session_id: change-name
   code_reviewer:
     runner: opencode
     provider: volcengine-plan
     model: glm-5.2
   task_verifier:
     runner: opencode
-    provider: volcengine-plan
-    model: glm-5.2
+    provider: deepseek
+    model: deepseek-flash
   codex_review:
     enabled: true
     command: codex exec -s read-only

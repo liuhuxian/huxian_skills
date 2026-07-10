@@ -72,6 +72,7 @@ Never accept “done” as evidence. A handoff is reviewable only when these fil
 agent/status.json
 agent/completion_gate.json
 agent/verification.md
+agent/self_review.md
 agent/code_review_round_<n>.md
 agent/task_verification_round_<n>.md
 agent/changed_files.txt

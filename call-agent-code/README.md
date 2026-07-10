@@ -38,15 +38,14 @@ defaults:
     runner: opencode
     provider: deepseek
     model: deepseek-v4-pro
-    session_id: change-name
   code_reviewer:
     runner: opencode
     provider: volcengine-plan
     model: glm-5.2
   task_verifier:
     runner: opencode
-    provider: volcengine-plan
-    model: glm-5.2
+    provider: deepseek
+    model: deepseek-flash
   codex_review:
     enabled: true
     command: codex exec -s read-only
@@ -66,13 +65,27 @@ model    = 模型名，例如 glm-5.2、minimax-m3、deepseek-v4-pro。
 ```
 
 
-`developer.session_id` 只控制开发 agent 的会话标签。默认情况下 OpenCode 使用 `--title` 创建新会话，不会用 `--session` 恢复不存在的会话。只有命令行显式传入形如 `ses_...` 的已有 OpenCode session id 时，developer 才会用 `--session` 恢复该会话。code reviewer 和 task verifier 始终使用自动派生的独立 title：
+会话现在完全由 pipeline 自己管理，不再要求用户手工指定 `session_id`。
+
+对每个 OpenSpec change，pipeline 会维护两套状态：
 
 ```text
-developer     = <session_id>
-code_reviewer = <session_id>-code-reviewer
-task_verifier = <session_id>-task-verifier
+session_labels
+  developer     = <change>
+  code_reviewer = <change>-code-reviewer
+  task_verifier = <change>-task-verifier
+
+session_ids
+  developer / code_reviewer / task_verifier
+  = OpenCode 真实会话 id（形如 ses_...）
 ```
+
+行为规则：
+
+- 首次启动某个角色时，用对应 `session_label` 作为 `--title` 新建会话。
+- 运行后，pipeline 通过 `opencode session list` 记录该角色最新的真实 `session_id`。
+- 后续同一角色跨轮次继续执行时，优先用该 `session_id` 做 `--session` 恢复。
+- developer、code reviewer、task verifier 三个角色彼此隔离，各自复用自己的固定会话。
 
 OpenCode 使用的模型格式是：
 
@@ -147,7 +160,7 @@ $call-agent-code resume stage1-ddp-safe-sigreg-logging
 $call-agent-code resume stage1-ddp-safe-sigreg-logging --worktree wk1
 ```
 
-`resume` 会根据 `status.json` 和已有产物从中断阶段继续，不是简单从头重跑。
+`resume` 会根据 `status.json` 和已有产物从中断阶段继续，不是简单从头重跑。为了避免旧的僵尸 tmux 窗口造成假存活，`start/resume` 现在会先关闭同名 tmux session，再重新拉起 `pipeline/status` 两个窗口。
 
 ## 推荐工作流
 
