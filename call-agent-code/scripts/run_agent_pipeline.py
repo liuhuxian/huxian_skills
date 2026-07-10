@@ -430,14 +430,21 @@ You are the developer agent for OpenSpec change `{change}`.
    paste what actually ran.
 6. If a test fails, record the failure honestly with the actual exit code and error
    output. Do not hide failures.
-7. If a file read, bash command, or external access is rejected by the platform,
+7. Do not claim a test passed unless you actually ran it. Do not write only
+   "passed", "验证通过", or a prose summary. Include enough real output for a
+   reviewer to judge that the command actually ran.
+8. If you could not run a required test, explicitly record it as "NOT RUN" in
+   `verification.md` with the concrete blocker or reason. Do not silently omit it.
+9. In `handover.md`, summarize which required tests were run, which were not run,
+   and why that evidence is sufficient for this round.
+10. If a file read, bash command, or external access is rejected by the platform,
    treat it as a task blocker. Write `status.json` with `state=blocked` and a
    concrete `blocking_issue`. Do NOT exit as if the task succeeded.
    Also write `permission_request.json` semantics via the pipeline by making the
    blocking path explicit in your output/logs.
-8. Write `changed_files.txt`, `self_review.md`, `handover.md`, and
+11. Write `changed_files.txt`, `self_review.md`, `handover.md`, and
    `completion_gate.json`. Do not commit.
-9. Before exiting, verify all required handoff files exist and are non-empty.
+12. Before exiting, verify all required handoff files exist and are non-empty.
 """
         task_path.write_text(body, encoding="utf-8")
         append_log(agent_dir, f"generated task: {task_path.name}")
@@ -496,9 +503,11 @@ You are subagent2, the task verifier for OpenSpec change `{change}`.
 3. Do not recursively scan the whole change directory. Do not inspect `agent/.opencode_runtime/`, `node_modules/`, `.git/`, or temporary protocol files unless the task explicitly names them. Focus on the named OpenSpec files, handoff artifacts, and `git diff`.
 4. Check whether every task/spec requirement is actually satisfied by files, code, and recorded verification evidence.
 5. Open `verification.md`. For each required verification item in `tasks.md`, confirm the file contains: the exact command, raw stdout excerpts, and the exit code. If any item has only prose claims without concrete output, flag it as a NEEDS_CHANGES finding with the specific missing item. Do not infer test success from prose.
-6. Confirm generated review files and completion gate fields are consistent with the current round.
-7. Write the required output file once with the final verdict line and the full verification body. Do not write a temporary placeholder; write the complete file in one pass. Do not merely describe the verification in chat.
-8. Before exiting, verify the output file exists, is non-empty, and starts with a valid verdict line.
+6. Treat developer verification claims as potentially unreliable. A statement like "passed", "验证通过", or a short summary alone is not sufficient evidence.
+7. If a required test is marked as not run, incomplete, blocked, or lacks enough real output to judge that it actually executed, return NEEDS_CHANGES unless the omission is explicitly allowed by the OpenSpec.
+8. Confirm generated review files and completion gate fields are consistent with the current round.
+9. Write the required output file once with the final verdict line and the full verification body. Do not write a temporary placeholder; write the complete file in one pass. Do not merely describe the verification in chat.
+10. Before exiting, verify the output file exists, is non-empty, and starts with a valid verdict line.
 
 {verdict_contract(output)}
 
@@ -524,16 +533,18 @@ You are Codex lead reviewer for OpenSpec change `{change}`.
 ## Steps You Must Execute
 
 1. Read `proposal.md`, `design.md` if present, `tasks.md`, and all spec delta files under `specs/`.
-2. Inspect `git diff HEAD --stat` and the relevant `git diff HEAD` content.
-3. Do NOT read developer handoff artifacts (`changed_files.txt`, `verification.md`, `self_review.md`, `handover.md`, `completion_gate.json`). Do NOT read secondary reviews (`code_review_round_*.md`, `task_verification_round_*.md`). Form your own independent judgment.
-4. Do not recursively scan the whole change directory. Do not inspect `agent/`, `node_modules/`, `.git/`, or temporary protocol files. Focus on the OpenSpec spec files and `git diff`.
-5. Check architecture-level compatibility, code correctness, and whether the change satisfies the spec requirements.
-6. Do NOT try to write workspace files yourself. Output the final review markdown to stdout only; the `codex exec -o` wrapper will save it to the artifact path above.
-7. The first non-empty line of your stdout MUST be exactly one of:
+2. Read `verification.md` and `changed_files.txt` from the developer handoff directory.
+3. Inspect `git diff HEAD --stat` and the relevant `git diff HEAD` content.
+4. Do NOT read `self_review.md`, `handover.md`, `completion_gate.json`, or any secondary review files (`code_review_round_*.md`, `task_verification_round_*.md`). Form your own independent judgment.
+5. Do not recursively scan the whole change directory. Do not inspect `node_modules/`, `.git/`, or temporary protocol files. Focus on the OpenSpec spec files, `verification.md`, `changed_files.txt`, and `git diff`.
+6. Treat developer verification claims as potentially unreliable. Do not accept "passed" or prose summaries alone; inspect whether `verification.md` contains enough concrete command/output evidence for the required tests.
+7. Check architecture-level compatibility, code correctness, whether the change satisfies the spec requirements, and whether the testing evidence is sufficient for the claimed completion.
+8. Do NOT try to write workspace files yourself. Output the final review markdown to stdout only; the `codex exec -o` wrapper will save it to the artifact path above.
+9. The first non-empty line of your stdout MUST be exactly one of:
    - `- **Verdict:** PASS`
    - `- **Verdict:** NEEDS_CHANGES`
-8. Your very first output line MUST be the final verdict line. Do not put findings, narration, numbering, or preambles before it.
-9. After the verdict line, emit the full review body in one pass. Do not emit tool narration, preambles, code fences around the final answer, "intended artifact" wrappers, or explanations about file-writing limitations.
+10. Your very first output line MUST be the final verdict line. Do not put findings, narration, numbering, or preambles before it.
+11. After the verdict line, emit the full review body in one pass. Do not emit tool narration, preambles, code fences around the final answer, "intended artifact" wrappers, or explanations about file-writing limitations.
 
 ## Output Body Requirements
 
@@ -1067,28 +1078,80 @@ def refresh_request_from_config(request_path: Path, request: dict[str, Any]) -> 
 
 
 def cleanup_temporary_protocol_files(agent_dir: Path) -> None:
-    patterns = (
-        "developer_task_round_*.md",
-        "code_review_task_round_*.md",
-        "task_verification_task_round_*.md",
-        "codex_review_task_round_*.md",
-        "developer_prompt_round_*.md",
-        "code_reviewer_prompt_round_*.md",
-        "code_reviewer_artifact_retry_round_*.md",
-        "task_verifier_artifact_retry_round_*.md",
-        "task_verifier_prompt_round_*.md",
-        "codex_review_prompt_round_*.md",
-    )
+    status = read_status(agent_dir) or {}
+    round_no = int(status.get("round") or 0)
+    keep = {
+        "request.json",
+        "status.json",
+        "final_status.json",
+        "completion_gate.json",
+        "verification.md",
+        "changed_files.txt",
+        "self_review.md",
+        "handover.md",
+    }
+    if round_no > 0:
+        keep.update(
+            {
+                f"code_review_round_{round_no}.md",
+                f"task_verification_round_{round_no}.md",
+                f"codex_review_round_{round_no}.md",
+            }
+        )
+
     removed = 0
-    for pattern in patterns:
-        for path in agent_dir.glob(pattern):
+    for path in agent_dir.iterdir():
+        if path.name in keep:
+            continue
+        if path.name == ".opencode_runtime" and path.is_dir():
+            shutil.rmtree(path)
+            removed += 1
+            continue
+        if path.is_file():
             path.unlink(missing_ok=True)
             removed += 1
-    runtime_dir = agent_dir / ".opencode_runtime"
-    if runtime_dir.exists():
-        shutil.rmtree(runtime_dir)
-        removed += 1
-    append_log(agent_dir, f"cleanup: removed {removed} temporary protocol files after ready_for_commit")
+        elif path.is_dir():
+            shutil.rmtree(path)
+            removed += 1
+
+    append_log(agent_dir, f"cleanup: removed {removed} non-essential agent artifacts after ready_for_commit")
+
+
+def tmux_session_name_for_agent(agent_dir: Path) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]", "-", f"agent-{agent_dir.parent.name}")
+
+
+def schedule_tmux_session_cleanup(agent_dir: Path, delay_seconds: int = 1, attempts: int = 6) -> None:
+    session = tmux_session_name_for_agent(agent_dir)
+    try:
+        if not tmux_session_exists(session):
+            return
+        # Use a detached helper process so the current tmux pane can finish
+        # writing status/log artifacts before the session is removed. Retry a few
+        # times because killing the tmux session that still hosts the current
+        # Python process can race with process exit on some runs.
+        script = (
+            f"sleep {int(delay_seconds)}; "
+            f"for i in $(seq 1 {int(attempts)}); do "
+            f"tmux has-session -t {shlex.quote(session)} >/dev/null 2>&1 || exit 0; "
+            f"tmux kill-session -t {shlex.quote(session)} >/dev/null 2>&1 || true; "
+            f"sleep 1; "
+            f"done; "
+            f"exit 0"
+        )
+        subprocess.Popen(
+            [
+                "bash",
+                "-lc",
+                script,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        append_log(agent_dir, f"scheduled tmux cleanup for terminal state: {session} (attempts={attempts})")
+    except Exception as exc:
+        append_log(agent_dir, f"warning: failed to schedule tmux cleanup: {exc}")
 
 
 def _best_blocking_issue(agent_dir: Path, fallback: str) -> str:
@@ -1096,6 +1159,29 @@ def _best_blocking_issue(agent_dir: Path, fallback: str) -> str:
     if status and status.get("blocking_issue"):
         return status["blocking_issue"]
     return fallback
+
+
+def finalize_terminal_state(
+    agent_dir: Path,
+    request: dict[str, Any],
+    *,
+    state: str,
+    phase: str,
+    round_no: int,
+    blocking_issue: str | None = None,
+    log_message: str | None = None,
+    final_status_payload: dict[str, Any] | None = None,
+) -> None:
+    write_status(agent_dir, request, state, phase, round_no, blocking_issue)
+    payload = {"state": state, "phase": phase, "updated_at": now_iso(), "round": round_no}
+    if blocking_issue:
+        payload["blocking_issue"] = blocking_issue
+    if final_status_payload:
+        payload.update(final_status_payload)
+    atomic_json(agent_dir / "final_status.json", payload)
+    if log_message:
+        append_log(agent_dir, log_message)
+    schedule_tmux_session_cleanup(agent_dir)
 
 
 def run_pipeline(request_path: Path) -> int:
@@ -1116,14 +1202,30 @@ def run_pipeline(request_path: Path) -> int:
         if step == "developer":
             code = run_developer_round(agent_dir, request, worktree, log_path, round_no)
             if code == 99:
+                schedule_tmux_session_cleanup(agent_dir)
                 return 4
             if code != 0:
-                write_status(agent_dir, request, "failed", "developer_agent_failed", round_no, f"developer exit code {code}")
+                finalize_terminal_state(
+                    agent_dir,
+                    request,
+                    state="failed",
+                    phase="developer_agent_failed",
+                    round_no=round_no,
+                    blocking_issue=f"developer exit code {code}",
+                    log_message=f"pipeline failed: developer exit code {code}",
+                )
                 return code
             ok, reason = validate_developer_artifacts(agent_dir, worktree)
             if not ok:
-                write_status(agent_dir, request, "failed", "developer_invalid_output", round_no, reason)
-                append_log(agent_dir, f"hard gate failed: {reason}")
+                finalize_terminal_state(
+                    agent_dir,
+                    request,
+                    state="failed",
+                    phase="developer_invalid_output",
+                    round_no=round_no,
+                    blocking_issue=reason,
+                    log_message=f"hard gate failed: {reason}",
+                )
                 return 3
             step = "code_reviewer"
 
@@ -1132,20 +1234,44 @@ def run_pipeline(request_path: Path) -> int:
             if not code_review_file.exists() or code_review_file.stat().st_size == 0:
                 code = run_code_review_round(agent_dir, request, worktree, log_path, round_no)
                 if code == 99:
+                    schedule_tmux_session_cleanup(agent_dir)
                     return 4
                 if code != 0:
-                    write_status(agent_dir, request, "failed", "code_reviewer_failed", round_no, f"code reviewer exit code {code}")
+                    finalize_terminal_state(
+                        agent_dir,
+                        request,
+                        state="failed",
+                        phase="code_reviewer_failed",
+                        round_no=round_no,
+                        blocking_issue=f"code reviewer exit code {code}",
+                        log_message=f"pipeline failed: code reviewer exit code {code}",
+                    )
                     return code
             code_review_verdict, reason = parse_verdict_file(code_review_file)
             if code_review_verdict == "INVALID" and should_retry_artifact(reason):
                 code = run_code_review_artifact_retry(agent_dir, request, worktree, log_path, round_no)
                 if code != 0:
-                    write_status(agent_dir, request, "failed", "code_reviewer_failed", round_no, f"code reviewer artifact retry exit code {code}")
+                    finalize_terminal_state(
+                        agent_dir,
+                        request,
+                        state="failed",
+                        phase="code_reviewer_failed",
+                        round_no=round_no,
+                        blocking_issue=f"code reviewer artifact retry exit code {code}",
+                        log_message=f"pipeline failed: code reviewer artifact retry exit code {code}",
+                    )
                     return code
                 code_review_verdict, reason = parse_verdict_file(code_review_file)
             if code_review_verdict == "INVALID":
-                write_status(agent_dir, request, "failed", "code_reviewer_invalid_output", round_no, reason)
-                append_log(agent_dir, f"hard gate failed: {reason}")
+                finalize_terminal_state(
+                    agent_dir,
+                    request,
+                    state="failed",
+                    phase="code_reviewer_invalid_output",
+                    round_no=round_no,
+                    blocking_issue=reason,
+                    log_message=f"hard gate failed: {reason}",
+                )
                 return 3
             code_review_pass = code_review_verdict == "PASS"
             update_gate(agent_dir, code_review_passed=code_review_pass)
@@ -1161,20 +1287,44 @@ def run_pipeline(request_path: Path) -> int:
             if not task_file.exists() or task_file.stat().st_size == 0:
                 code = run_task_verification_round(agent_dir, request, worktree, log_path, round_no)
                 if code == 99:
+                    schedule_tmux_session_cleanup(agent_dir)
                     return 4
                 if code != 0:
-                    write_status(agent_dir, request, "failed", "task_verifier_failed", round_no, f"task verifier exit code {code}")
+                    finalize_terminal_state(
+                        agent_dir,
+                        request,
+                        state="failed",
+                        phase="task_verifier_failed",
+                        round_no=round_no,
+                        blocking_issue=f"task verifier exit code {code}",
+                        log_message=f"pipeline failed: task verifier exit code {code}",
+                    )
                     return code
             task_verdict, reason = parse_verdict_file(task_file)
             if task_verdict == "INVALID" and should_retry_artifact(reason):
                 code = run_task_verification_artifact_retry(agent_dir, request, worktree, log_path, round_no)
                 if code != 0:
-                    write_status(agent_dir, request, "failed", "task_verifier_failed", round_no, f"task verifier artifact retry exit code {code}")
+                    finalize_terminal_state(
+                        agent_dir,
+                        request,
+                        state="failed",
+                        phase="task_verifier_failed",
+                        round_no=round_no,
+                        blocking_issue=f"task verifier artifact retry exit code {code}",
+                        log_message=f"pipeline failed: task verifier artifact retry exit code {code}",
+                    )
                     return code
                 task_verdict, reason = parse_verdict_file(task_file)
             if task_verdict == "INVALID":
-                write_status(agent_dir, request, "failed", "task_verifier_invalid_output", round_no, reason)
-                append_log(agent_dir, f"hard gate failed: {reason}")
+                finalize_terminal_state(
+                    agent_dir,
+                    request,
+                    state="failed",
+                    phase="task_verifier_invalid_output",
+                    round_no=round_no,
+                    blocking_issue=reason,
+                    log_message=f"hard gate failed: {reason}",
+                )
                 return 3
             task_pass = task_verdict == "PASS"
             update_gate(agent_dir, task_verification_passed=task_pass)
@@ -1200,8 +1350,15 @@ def run_pipeline(request_path: Path) -> int:
                 codex_verdict, reason = parse_verdict_file(codex_out)
                 if codex_verdict == "INVALID":
                     reason = _best_blocking_issue(agent_dir, reason)
-                    write_status(agent_dir, request, "failed", "codex_review_invalid_output", round_no, reason)
-                    append_log(agent_dir, f"hard gate failed: {reason}")
+                    finalize_terminal_state(
+                        agent_dir,
+                        request,
+                        state="failed",
+                        phase="codex_review_invalid_output",
+                        round_no=round_no,
+                        blocking_issue=reason,
+                        log_message=f"hard gate failed: {reason}",
+                    )
                     return 3
                 codex_pass = codex_verdict == "PASS"
                 update_gate(agent_dir, codex_review_passed=codex_pass)
@@ -1213,13 +1370,25 @@ def run_pipeline(request_path: Path) -> int:
 
         update_gate(agent_dir, code_review_passed=True, task_verification_passed=True, codex_review_passed=True, no_major_findings=True, ready_for_commit=True)
         cleanup_temporary_protocol_files(agent_dir)
-        write_status(agent_dir, request, "ready_for_commit", "all_reviews_passed", round_no)
-        atomic_json(agent_dir / "final_status.json", {"state": "ready_for_commit", "updated_at": now_iso(), "round": round_no})
-        append_log(agent_dir, "pipeline completed: ready_for_commit")
+        finalize_terminal_state(
+            agent_dir,
+            request,
+            state="ready_for_commit",
+            phase="all_reviews_passed",
+            round_no=round_no,
+            log_message="pipeline completed: ready_for_commit",
+        )
         return 0
 
-    write_status(agent_dir, request, "blocked", "max_review_rounds_exceeded", request["max_review_rounds"], "review loop did not pass")
-    append_log(agent_dir, "pipeline blocked: max review rounds exceeded")
+    finalize_terminal_state(
+        agent_dir,
+        request,
+        state="blocked",
+        phase="max_review_rounds_exceeded",
+        round_no=request["max_review_rounds"],
+        blocking_issue="review loop did not pass",
+        log_message="pipeline blocked: max review rounds exceeded",
+    )
     return 2
 
 def tmux_session_exists(session: str) -> bool:
@@ -1235,7 +1404,7 @@ def tmux_window_names(session: str) -> list[str]:
 
 def start_background(agent_dir: Path) -> int:
     request = agent_dir / "request.json"
-    session = re.sub(r"[^a-zA-Z0-9._-]", "-", f"agent-{agent_dir.parent.name}")
+    session = tmux_session_name_for_agent(agent_dir)
     run_cmd_args = [sys.executable, str(Path(__file__).resolve()), "run", str(request)]
     watch_cmd = f"{shlex.quote(str(SKILL_DIR / 'scripts' / 'watch_agent_status.sh'))} {shlex.quote(str(agent_dir))} 5"
 
@@ -1257,6 +1426,12 @@ def start_background(agent_dir: Path) -> int:
     return 0
 
 def resolve_agent_dir(worktree: Path, change: str | None) -> Path:
+    if change:
+        raw = Path(change).expanduser()
+        if raw.name == "agent" and raw.exists():
+            return raw.resolve()
+        if raw.exists() and raw.is_dir() and (raw / "status.json").exists():
+            return raw.resolve()
     if not change:
         change = detect_change(worktree)
     return worktree / "openspec" / "changes" / change / "agent"

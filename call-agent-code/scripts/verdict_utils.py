@@ -28,20 +28,21 @@ def parse_verdict_file(path: Path) -> tuple[str, str]:
     for marker in TOOL_ERROR_MARKERS:
         if leading.startswith(marker):
             return "INVALID", f"tool/error output in {path.name}: {marker}"
-    for line in text.splitlines():
+    lines = text.splitlines()
+    for idx, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
             continue
         m = VERDICT_RE.match(stripped)
-        if m:
-            verdict = m.group(1).upper()
-            body = text[text.index(stripped) + len(stripped):].strip()
-            if not body:
-                return "INVALID", f"missing review body in {path.name}"
-            if len(body) < MIN_REVIEW_BODY_CHARS:
-                return "INVALID", f"review body too short in {path.name}"
-            return verdict, f"verdict={verdict} in {path.name}"
-        break
+        if not m:
+            continue
+        verdict = m.group(1).upper()
+        body = "\n".join(lines[idx + 1:]).strip()
+        if not body:
+            return "INVALID", f"missing review body in {path.name}"
+        if len(body) < MIN_REVIEW_BODY_CHARS:
+            return "INVALID", f"review body too short in {path.name}"
+        return verdict, f"verdict={verdict} in {path.name}"
     return "INVALID", f"missing explicit Verdict in {path.name}"
 
 

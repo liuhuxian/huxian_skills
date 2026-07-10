@@ -1,3 +1,5 @@
 /.codebuddy
 /.trellis
 AGENTS.md
+__pycache__/
+*.pyc
