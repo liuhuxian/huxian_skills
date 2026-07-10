@@ -11,7 +11,7 @@ defaults:
   task_verifier:
     runner: opencode
     provider: deepseek
-    model: deepseek-flash
+    model: deepseek-v4-flash
   codex_review:
     enabled: true
     command: codex exec -s read-only

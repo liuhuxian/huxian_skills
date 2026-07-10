@@ -246,6 +246,48 @@ def append_log(agent_dir: Path, message: str) -> None:
         f.flush()
 
 
+PERMISSION_DENIED_PATTERNS = [
+    re.compile(r"permission requested:\s*external_directory\s*\((.*?)\)", re.IGNORECASE),
+    re.compile(r"permission_required:\s*external_read:(\S+)", re.IGNORECASE),
+]
+
+
+def detect_permission_block(agent_dir: Path, log_before: int = 0) -> tuple[bool, str | None]:
+    log_path = agent_dir / "progress.log"
+    if not log_path.exists():
+        return False, None
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    if log_before > 0:
+        text = text[log_before:]
+    for pattern in PERMISSION_DENIED_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            path = match.group(1).strip()
+            return True, f"permission_required: external_read:{path}"
+    return False, None
+
+
+def write_permission_request(agent_dir: Path, role: str, round_no: int, blocking_issue: str | None) -> None:
+    issue = blocking_issue or "permission_required"
+    path = ""
+    if ":" in issue:
+        parts = issue.split(":", 2)
+        if len(parts) == 3:
+            path = parts[2]
+    atomic_json(
+        agent_dir / "permission_request.json",
+        {
+            "role": role,
+            "round": round_no,
+            "type": "external_read",
+            "path": path,
+            "reason": issue,
+            "next_action": "Update ~/.config/opencode/opencode.json permission.external_directory to allow this path, then run $call-agent-code resume",
+            "updated_at": now_iso(),
+        },
+    )
+
+
 
 def write_status(agent_dir: Path, request: dict[str, Any], state: str, phase: str, round_no: int, blocking_issue: str | None = None) -> None:
     ensure_session_state(request)
@@ -391,6 +433,8 @@ You are the developer agent for OpenSpec change `{change}`.
 7. If a file read, bash command, or external access is rejected by the platform,
    treat it as a task blocker. Write `status.json` with `state=blocked` and a
    concrete `blocking_issue`. Do NOT exit as if the task succeeded.
+   Also write `permission_request.json` semantics via the pipeline by making the
+   blocking path explicit in your output/logs.
 8. Write `changed_files.txt`, `self_review.md`, `handover.md`, and
    `completion_gate.json`. Do not commit.
 9. Before exiting, verify all required handoff files exist and are non-empty.
@@ -796,6 +840,12 @@ def run_developer_round(agent_dir: Path, request: dict[str, Any], worktree: Path
     adopted = adopt_role_session_id(request_path, request, "developer")
     if adopted:
         append_log(agent_dir, f"round {round_no}: developer session recorded as {adopted}")
+    blocked, issue = detect_permission_block(agent_dir, log_before)
+    if blocked:
+        write_permission_request(agent_dir, "developer_agent", round_no, issue)
+        write_status(agent_dir, request, "blocked", "developer_agent", round_no, issue)
+        append_log(agent_dir, f"permission block detected: {issue}")
+        return 99
     return code
 
 
@@ -807,6 +857,7 @@ def run_code_review_round(agent_dir: Path, request: dict[str, Any], worktree: Pa
     session_label, session_id = resolve_role_session(agent_dir, request, "code_reviewer")
     if session_id:
         append_log(agent_dir, f"round {round_no}: code reviewer reusing session {session_id}")
+    log_before = (agent_dir / "progress.log").stat().st_size
     code = run_cmd(
         build_runner_cmd(
             request["code_reviewer"],
@@ -822,6 +873,12 @@ def run_code_review_round(agent_dir: Path, request: dict[str, Any], worktree: Pa
     adopted = adopt_role_session_id(request_path, request, "code_reviewer")
     if adopted:
         append_log(agent_dir, f"round {round_no}: code reviewer session recorded as {adopted}")
+    blocked, issue = detect_permission_block(agent_dir, log_before)
+    if blocked:
+        write_permission_request(agent_dir, "code_reviewer", round_no, issue)
+        write_status(agent_dir, request, "blocked", "code_reviewer", round_no, issue)
+        append_log(agent_dir, f"permission block detected: {issue}")
+        return 99
     return code
 
 
@@ -903,6 +960,7 @@ def run_task_verification_round(agent_dir: Path, request: dict[str, Any], worktr
     session_label, session_id = resolve_role_session(agent_dir, request, "task_verifier")
     if session_id:
         append_log(agent_dir, f"round {round_no}: task verifier reusing session {session_id}")
+    log_before = (agent_dir / "progress.log").stat().st_size
     code = run_cmd(
         build_runner_cmd(
             request["task_verifier"],
@@ -918,6 +976,12 @@ def run_task_verification_round(agent_dir: Path, request: dict[str, Any], worktr
     adopted = adopt_role_session_id(request_path, request, "task_verifier")
     if adopted:
         append_log(agent_dir, f"round {round_no}: task verifier session recorded as {adopted}")
+    blocked, issue = detect_permission_block(agent_dir, log_before)
+    if blocked:
+        write_permission_request(agent_dir, "task_verifier", round_no, issue)
+        write_status(agent_dir, request, "blocked", "task_verifier", round_no, issue)
+        append_log(agent_dir, f"permission block detected: {issue}")
+        return 99
     return code
 
 
@@ -1051,6 +1115,8 @@ def run_pipeline(request_path: Path) -> int:
     while round_no <= request["max_review_rounds"]:
         if step == "developer":
             code = run_developer_round(agent_dir, request, worktree, log_path, round_no)
+            if code == 99:
+                return 4
             if code != 0:
                 write_status(agent_dir, request, "failed", "developer_agent_failed", round_no, f"developer exit code {code}")
                 return code
@@ -1065,6 +1131,8 @@ def run_pipeline(request_path: Path) -> int:
             code_review_file = agent_dir / f"code_review_round_{round_no}.md"
             if not code_review_file.exists() or code_review_file.stat().st_size == 0:
                 code = run_code_review_round(agent_dir, request, worktree, log_path, round_no)
+                if code == 99:
+                    return 4
                 if code != 0:
                     write_status(agent_dir, request, "failed", "code_reviewer_failed", round_no, f"code reviewer exit code {code}")
                     return code
@@ -1092,6 +1160,8 @@ def run_pipeline(request_path: Path) -> int:
             task_file = agent_dir / f"task_verification_round_{round_no}.md"
             if not task_file.exists() or task_file.stat().st_size == 0:
                 code = run_task_verification_round(agent_dir, request, worktree, log_path, round_no)
+                if code == 99:
+                    return 4
                 if code != 0:
                     write_status(agent_dir, request, "failed", "task_verifier_failed", round_no, f"task verifier exit code {code}")
                     return code

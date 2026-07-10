@@ -95,11 +95,11 @@ if mode == 'header':
     print(f"  code_reviewer: {role_label(s.get('code_reviewer'))}")
     print(f"  task_verifier: {role_label(s.get('task_verifier'))}")
     print("")
-    sessions = s.get('sessions') or {}
+    session_ids = s.get('session_ids') or {}
     print("sessions:")
-    print(f"  developer: {sessions.get('developer')}")
-    print(f"  code_reviewer: {sessions.get('code_reviewer')}")
-    print(f"  task_verifier: {sessions.get('task_verifier')}")
+    print(f"  developer: {session_ids.get('developer')}")
+    print(f"  code_reviewer: {session_ids.get('code_reviewer')}")
+    print(f"  task_verifier: {session_ids.get('task_verifier')}")
     print("")
     print(f"log: {log_path}")
     print(f"status: {status_path}")
@@ -109,10 +109,13 @@ phase_text = {
     'protocol_files_ready': 'protocol files prepared',
     'developer_agent': 'developer is implementing from OpenSpec',
     'developer_agent_failed': 'developer process failed',
+    'code_reviewing': 'code reviewer is checking implementation',
     'code_reviewer': 'code reviewer is checking implementation',
     'code_reviewer_failed': 'code reviewer process failed',
+    'task_verifying': 'task verifier is checking task completion',
     'task_verifier': 'task verifier is checking task completion',
     'task_verifier_failed': 'task verifier process failed',
+    'codex_reviewing': 'Codex lead review is running',
     'codex_lead_review': 'Codex lead review is running',
     'review_feedback_pending_fix': 'reviews found issues; next developer fix round is being prepared',
     'all_reviews_passed': 'all reviews passed; ready for commit preparation',
@@ -183,6 +186,7 @@ PYBRIEF
     fi
   elif [[ "$state_key" != "$last_state_key" ]]; then
     if [[ "$heartbeat_active" -eq 1 ]]; then
+      printf '\r\033[2K'
       echo ""
       heartbeat_active=0
     fi
@@ -199,17 +203,21 @@ PYBRIEF
     last_state_key="$state_key"
     last_heartbeat="$now_epoch"
   elif (( now_epoch - last_heartbeat >= 60 )); then
-    if [[ -t 1 ]]; then
+    if is_terminal_state "$state"; then
+      :
+    elif [[ -t 1 ]]; then
       if [[ "$stalled" -eq 1 ]]; then
-        printf "\r\033[2K[%s] stalled | %s | next: resume\n" "$now_text" "$status_brief"
+        printf '\r\033[2K[%s] stalled | %s | next: resume' "$now_text" "$status_brief"
       else
-        printf "\r\033[2K[%s] still running | %s\n" "$now_text" "$status_brief"
+        printf '\r\033[2K[%s] still running | %s' "$now_text" "$status_brief"
       fi
+      heartbeat_active=1
+      last_heartbeat="$now_epoch"
     else
       echo "[$now_text] heartbeat | $status_brief"
+      heartbeat_active=1
+      last_heartbeat="$now_epoch"
     fi
-    heartbeat_active=1
-    last_heartbeat="$now_epoch"
   fi
 
   sleep "$INTERVAL"

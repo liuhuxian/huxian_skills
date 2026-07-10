@@ -45,7 +45,7 @@ defaults:
   task_verifier:
     runner: opencode
     provider: deepseek
-    model: deepseek-flash
+    model: deepseek-v4-flash
   codex_review:
     enabled: true
     command: codex exec -s read-only
@@ -161,6 +161,41 @@ $call-agent-code resume stage1-ddp-safe-sigreg-logging --worktree wk1
 ```
 
 `resume` 会根据 `status.json` 和已有产物从中断阶段继续，不是简单从头重跑。为了避免旧的僵尸 tmux 窗口造成假存活，`start/resume` 现在会先关闭同名 tmux session，再重新拉起 `pipeline/status` 两个窗口。
+
+## 外部只读权限策略
+
+当 developer / reviewer / verifier 需要读取工作区外的关键依赖时，当前 skill 采用最简单的策略：
+
+1. 首次遇到权限阻塞，pipeline 直接停在当前阶段，状态写成 `blocked`
+2. 同时写出：
+   - `status.json` 里的 `blocking_issue`
+   - `permission_request.json`
+3. 用户手动修改：
+
+```text
+~/.config/opencode/opencode.json
+```
+
+在 `permission.external_directory` 里放行所需路径，例如：
+
+```json
+{
+  "permission": {
+    "external_directory": {
+      "/tmp/stable-pretraining/**": "allow",
+      "/data/lewm/**": "allow"
+    }
+  }
+}
+```
+
+4. 然后再次执行：
+
+```text
+$call-agent-code resume
+```
+
+pipeline 会从原来被阻塞的阶段继续，而不是新开一轮。
 
 ## 推荐工作流
 
